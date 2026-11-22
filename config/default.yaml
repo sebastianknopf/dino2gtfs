@@ -1,0 +1,25 @@
+input:
+  encoding: cp1252
+  delimiter: ";"
+  source_crs: null
+agency:
+  timezone: Europe/Berlin
+  language: de
+  url: https://example.org
+  name: Example Agency
+ids:
+  station:
+    mode: global
+    template: "station:{stop.VERSION}:{stop.STOP_NR}"
+  platform:
+    mode: global
+    template: "platform:{stop_point.VERSION}:{stop_point.STOP_NR}:{stop_point.STOP_AREA_NR}:{stop_point.STOPPING_POINT_NR}"
+  route:
+    mode: template
+    template: "route:{line.LINE_NR}:{line.OP_CODE}:{gtfs.route_type}"
+  trip:
+    mode: global
+    template: "trip:{trip.VERSION}:{trip.LINE_NR}:{trip.STR_LINE_VAR}:{trip.LINE_DIR_NR}:{trip.TRIP_ID}:{gtfs.split_key}"
+transformations:
+  transfers: true
+  notices: true
