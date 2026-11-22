@@ -27,11 +27,15 @@ class Dino212Importer:
         input_settings = settings.get("input", {})
         encoding = input_settings.get("encoding", "cp1252")
         delimiter = input_settings.get("delimiter", ";")
-        
-        count = 0
+
+        LOGGER.info("starting import of DINO archive %s", source)
+        LOGGER.debug("encoding: %s, delimiter: %s", encoding, delimiter)
+
         try:
             with ZipFile(source) as archive:
                 for member in din_members(archive):
+                    LOGGER.info("reading file %s", member.filename)
+                    
                     with archive.open(member) as binary:
                         with io.TextIOWrapper(binary, encoding=encoding, newline="") as stream:
                             batch: list[tuple[str, int, str]] = []
@@ -39,16 +43,13 @@ class Dino212Importer:
                                 batch.append((member.filename, row_number, json.dumps(row)))
                                 if len(batch) >= 500:
                                     database.executemany("INSERT INTO source_rows VALUES (?, ?, ?)", batch)
-                                    count += len(batch)
-                                    
                                     batch.clear()
                             
                             if batch:
                                 database.executemany("INSERT INTO source_rows VALUES (?, ?, ?)", batch)
-                                count += len(batch)
                 
                 database.commit()
         except (BadZipFile, UnicodeError, OSError) as exc:
-            raise InputError(f"Unable to read DINO ZIP: {exc}") from exc
+            raise InputError(f"unable to read DINO archive: {exc}") from exc
         
-        LOGGER.info("Staged %s DINO rows", count)
+        LOGGER.info("completed import of DINO archive")

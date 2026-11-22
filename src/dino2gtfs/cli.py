@@ -9,14 +9,16 @@ from dino2gtfs.infrastructure.config import load_config
 from dino2gtfs.infrastructure.logsetup import configure_logging
 from dino2gtfs.profiles.registry import get_profile, list_profiles
 
+LOGGER = logging.getLogger(__name__)
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="dino2gtfs", description="DINO to GTFS converter")
     parser.add_argument("--verbose", action="store_true")
     
     commands = parser.add_subparsers(dest="command", required=True)
-    commands.add_parser("profiles", help="List supported profiles")
+    commands.add_parser("profiles", help="list supported profiles")
     
-    convert = commands.add_parser("convert", help="Convert a DINO ZIP to GTFS")
+    convert = commands.add_parser("convert", help="convert a DINO archive to GTFS")
     convert.add_argument("--profile", required=True)
     convert.add_argument("--config", type=Path, required=True)
     convert.add_argument("--input", type=Path, required=True)
@@ -41,8 +43,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         
         if args.input.resolve() == args.output.resolve():
             raise ConfigurationError("Input and output paths must differ")
+
         
+        LOGGER.info("starting conversion with profile %s", args.profile)
+        LOGGER.debug("input: %s, output: %s", args.input, args.output)
+        LOGGER.debug("config: %s", settings)
+
         convert_archive(profile, settings, args.input, args.output)
+
+        LOGGER.info("completed conversion")
         
         return 0
     except (ConfigurationError, InputError, CollisionError, ConverterError) as exc:
