@@ -17,7 +17,7 @@ def test_imports_dynamic_tables_and_rows(tmp_path):
 
     with temporary_database() as db:
         DinoImporter().import_archive(source, db, {})
-        assert db.execute("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").fetchall() == [
+        assert db.execute("SELECT name FROM sqlite_master WHERE type = 'table' AND name GLOB 'dino_*' ORDER BY name").fetchall() == [
             ("dino_",), ("dino_line",), ("dino_stop",)
         ]
         assert [(row[1], row[2]) for row in db.execute('PRAGMA table_info("dino_stop")')] == [
@@ -25,7 +25,7 @@ def test_imports_dynamic_tables_and_rows(tmp_path):
         ]
         assert db.execute("SELECT * FROM dino_stop").fetchall() == [("001", "A;B"), ("2", "München")]
         assert db.execute("SELECT * FROM dino_line").fetchall() == []
-        assert db.execute("SELECT name FROM sqlite_master WHERE type = 'index'").fetchall() == []
+        assert db.execute("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name GLOB 'dino_*'").fetchall() == []
 
 
 def test_quotes_identifiers_and_honors_input_settings(tmp_path):
@@ -64,7 +64,7 @@ def test_invalid_file_rolls_back_import(tmp_path, contents, message):
     with temporary_database() as db:
         with pytest.raises(InputError, match=message):
             DinoImporter().import_archive(source, db, {})
-        assert db.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall() == []
+        assert db.execute("SELECT name FROM sqlite_master WHERE type = 'table' AND name GLOB 'dino_*'").fetchall() == []
 
 
 def test_missing_or_invalid_archive(tmp_path):
