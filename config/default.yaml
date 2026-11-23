@@ -20,6 +20,6 @@ ids:
   trip:
     mode: global
     template: "trip:{trip.VERSION}:{trip.LINE_NR}:{trip.STR_LINE_VAR}:{trip.LINE_DIR_NR}:{trip.TRIP_ID}:{gtfs.split_key}"
-transformations:
+features:
   transfers: true
   notices: true

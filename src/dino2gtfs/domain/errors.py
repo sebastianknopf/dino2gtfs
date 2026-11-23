@@ -12,5 +12,5 @@ class InputError(ConverterError):
 class CollisionError(ConverterError):
     """Duplicate or conflicting canonical identity."""
 
-class ConversionNotImplementedError(ConverterError):
-    """A selected profile does not yet implement GTFS conversion."""
+class ExportError(ConverterError):
+    """GTFS data or output could not be exported."""

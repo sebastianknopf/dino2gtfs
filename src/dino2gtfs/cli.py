@@ -4,6 +4,7 @@ import logging
 from pathlib import Path
 from collections.abc import Sequence
 from dino2gtfs.domain.errors import ConfigurationError, InputError, CollisionError, ConverterError
+from dino2gtfs.gtfs.exporter import GtfsExporter
 from dino2gtfs.infrastructure.config import load_config
 from dino2gtfs.infrastructure.importer import DinoImporter
 from dino2gtfs.infrastructure.logsetup import configure_logging
@@ -11,6 +12,10 @@ from dino2gtfs.infrastructure.sqlite import open_database
 from dino2gtfs.profiles.registry import get_profile, list_profiles
 
 LOGGER = logging.getLogger(__name__)
+
+def _same_path(first: Path, second: Path) -> bool:
+    return (first.resolve() == second.resolve()
+            or (first.exists() and second.exists() and first.samefile(second)))
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="dino2gtfs", description="DINO to GTFS converter")
@@ -43,13 +48,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         profile = get_profile(args.profile)
         settings = load_config(args.config)
         
-        if args.input.resolve() == args.output.resolve():
+        if _same_path(args.input, args.output):
             raise ConfigurationError("Input and output paths must differ")
+        if _same_path(args.config, args.output):
+            raise ConfigurationError("Config and output paths must differ")
 
         if args.database is not None:
             for other in (args.input, args.output, args.config):
-                if (args.database.resolve() == other.resolve()
-                        or (args.database.exists() and other.exists() and args.database.samefile(other))):
+                if _same_path(args.database, other):
                     raise ConfigurationError("Database path must differ from input, output and config paths")
         
         LOGGER.info("starting conversion with profile %s", args.profile)
@@ -62,6 +68,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
             # apply profile conversion
             profile.converter.convert(database, args.output, settings)
+
+            # run GTFS export
+            GtfsExporter().export_archive(database, args.output, settings)
 
         LOGGER.info("completed conversion")
         

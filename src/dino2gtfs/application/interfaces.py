@@ -5,7 +5,7 @@ from collections.abc import Mapping
 import sqlite3
 
 class Converter(Protocol):
-    """Convert imported source data into a validated GTFS ZIP."""
+    """Convert imported source data into GTFS tables."""
     def convert(self, database: sqlite3.Connection, destination: Path,
                 settings: Mapping[str, Any]) -> None: ...
 

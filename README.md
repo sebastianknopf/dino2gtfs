@@ -12,6 +12,10 @@ The profile and YAML configuration are mandatory. See a sample configuration in 
 
 Use `--database output/database.db3` to retain the SQLite database for inspection. Without this option, the database is temporary.
 
+After profile conversion, all enabled `gtfs_` tables are exported into a UTF-8 ZIP, including header-only files for empty tables. Locations are exported as `locations.geojson`. Different features can be enabled or disabled by `features.featureName` in the configuration file.
+
+The export does not validate the complete feed. Including empty tables can violate GTFS file-level conditions; the exporter logs a warning where applicable.
+
 ## License
 
 This project is licensed unter the Apache 2.0 license. See [LICENSE](LICENSE.md) for more information.

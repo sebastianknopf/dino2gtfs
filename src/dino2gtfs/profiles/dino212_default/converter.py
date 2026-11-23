@@ -1,14 +1,14 @@
 """DINO 2.1.2 converter extension point."""
+import logging
 import sqlite3
 from pathlib import Path
 from collections.abc import Mapping
 from typing import Any
-from dino2gtfs.domain.errors import ConversionNotImplementedError
+
+LOGGER = logging.getLogger(__name__)
 
 class Dino212Converter:
-    """Deliberately refuse incomplete GTFS generation."""
+    """Placeholder converter which leaves the GTFS tables unchanged."""
 
     def convert(self, database: sqlite3.Connection, destination: Path, settings: Mapping[str, Any]) -> None:
-        raise ConversionNotImplementedError(
-            "DINO 2.1.2 to GTFS field mapping is not implemented in this scaffold"
-        )
+        LOGGER.warning("DINO 2.1.2 to GTFS field mapping is not implemented; GTFS tables remain empty")
