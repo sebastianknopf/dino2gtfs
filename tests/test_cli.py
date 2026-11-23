@@ -23,9 +23,10 @@ def test_convert_imports_before_calling_profile(tmp_path, monkeypatch):
 
     rows = []
     converter = Mock()
-    converter.convert.side_effect = lambda db, destination, settings: rows.extend(
-        db.execute("SELECT ID, NAME FROM dino_stop").fetchall()
-    )
+    def convert(db, destination, settings):
+        rows.extend(db.execute("SELECT ID, NAME FROM dino_stop").fetchall())
+        db.execute("INSERT INTO gtfs_agency (agency_name, agency_url, agency_timezone) VALUES ('Test', 'https://example.com', 'UTC')")
+    converter.convert.side_effect = convert
     monkeypatch.setattr("dino2gtfs.cli.get_profile", lambda name: SimpleNamespace(name=name, converter=converter))
     assert main(["convert", "--profile", "another_profile", "--config", str(config),
                  "--input", str(source), "--output", str(destination)]) == 0
@@ -34,6 +35,8 @@ def test_convert_imports_before_calling_profile(tmp_path, monkeypatch):
     _, actual_destination, settings = converter.convert.call_args.args
     assert actual_destination == destination
     assert settings == {"input": {"encoding": "utf-8"}}
+    with ZipFile(destination) as archive:
+        assert "Test,https://example.com,UTC" in archive.read("agency.txt").decode("utf-8")
 
 def test_convert_does_not_run_converter_on_import_failure(tmp_path, monkeypatch):
     config = tmp_path / "config.yaml"
@@ -109,3 +112,53 @@ def test_database_replacement_refuses_sqlite_sidecars(tmp_path, monkeypatch):
                  "--input", str(tmp_path / "in.zip"), "--output", str(tmp_path / "out.zip"),
                  "--database", str(database_path)]) == 2
     assert database_path.read_bytes() == b"existing"
+
+
+def test_output_cannot_replace_config(tmp_path, monkeypatch):
+    config = tmp_path / "config.yaml"
+    config.write_text("input:\n  encoding: utf-8\n")
+    monkeypatch.setattr("dino2gtfs.cli.get_profile", lambda name: SimpleNamespace(name=name, converter=Mock()))
+    assert main(["convert", "--profile", "another_profile", "--config", str(config),
+                 "--input", str(tmp_path / "in.zip"), "--output", str(config)]) == 2
+    assert config.read_text() == "input:\n  encoding: utf-8\n"
+
+
+def test_cli_applies_notice_feature_flag(tmp_path, monkeypatch):
+    source = tmp_path / "input.zip"
+    destination = tmp_path / "output.zip"
+    config = tmp_path / "config.yaml"
+    config.write_text("input:\n  encoding: utf-8\nfeatures:\n  notices: false\n")
+    with ZipFile(source, "w") as archive:
+        archive.writestr("stop.din", "ID\n1\n")
+    converter = Mock()
+    converter.convert.side_effect = lambda db, destination, settings: db.execute(
+        "INSERT INTO gtfs_notices VALUES ('n', 'Notice')"
+    )
+    monkeypatch.setattr("dino2gtfs.cli.get_profile", lambda name: SimpleNamespace(name=name, converter=converter))
+    assert main(["convert", "--profile", "another_profile", "--config", str(config),
+                 "--input", str(source), "--output", str(destination)]) == 0
+    with ZipFile(destination) as archive:
+        assert "notices.txt" not in archive.namelist()
+        assert "stops.txt" in archive.namelist()
+
+
+def test_export_failure_rolls_back_conversion_and_preserves_output(tmp_path, monkeypatch):
+    source = tmp_path / "input.zip"
+    destination = tmp_path / "output.zip"
+    config = tmp_path / "config.yaml"
+    database_path = tmp_path / "debug.db3"
+    destination.write_bytes(b"existing")
+    config.write_text("input:\n  encoding: utf-8\n")
+    with ZipFile(source, "w") as archive:
+        archive.writestr("stop.din", "ID\n1\n")
+    converter = Mock()
+    converter.convert.side_effect = lambda db, destination, settings: db.execute(
+        "INSERT INTO gtfs_stops (stop_id, stop_name) VALUES ('s', 'invalid\nname')"
+    )
+    monkeypatch.setattr("dino2gtfs.cli.get_profile", lambda name: SimpleNamespace(name=name, converter=converter))
+    assert main(["convert", "--profile", "another_profile", "--config", str(config),
+                 "--input", str(source), "--output", str(destination), "--database", str(database_path)]) == 1
+    assert destination.read_bytes() == b"existing"
+    with closing(sqlite3.connect(database_path)) as db:
+        assert db.execute("SELECT ID FROM dino_stop").fetchall() == [("1",)]
+        assert db.execute("SELECT * FROM gtfs_stops").fetchall() == []
