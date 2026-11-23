@@ -3,10 +3,11 @@ import argparse
 import logging
 from pathlib import Path
 from collections.abc import Sequence
-from dino2gtfs.application.convert import convert_archive
 from dino2gtfs.domain.errors import ConfigurationError, InputError, CollisionError, ConverterError
 from dino2gtfs.infrastructure.config import load_config
+from dino2gtfs.infrastructure.importer import DinoImporter
 from dino2gtfs.infrastructure.logsetup import configure_logging
+from dino2gtfs.infrastructure.sqlite import temporary_database
 from dino2gtfs.profiles.registry import get_profile, list_profiles
 
 LOGGER = logging.getLogger(__name__)
@@ -49,7 +50,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         LOGGER.debug("input: %s, output: %s", args.input, args.output)
         LOGGER.debug("config: %s", settings)
 
-        convert_archive(profile, settings, args.input, args.output)
+        with temporary_database() as database:
+            DinoImporter().import_archive(args.input, database, settings)
+            profile.converter.convert(database, args.output, settings)
 
         LOGGER.info("completed conversion")
         
