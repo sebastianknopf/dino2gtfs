@@ -2,6 +2,7 @@
 import sqlite3
 from contextlib import contextmanager
 from collections.abc import Iterator
+from importlib.resources import files
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -13,6 +14,9 @@ def temporary_database() -> Iterator[sqlite3.Connection]:
         connection = sqlite3.connect(path)
         
         try:
+            schema = files("dino2gtfs.infrastructure").joinpath("gtfs_static_schema.sql").read_text(encoding="utf-8")
+            connection.executescript(schema)
+            
             yield connection
         finally:
             connection.close()

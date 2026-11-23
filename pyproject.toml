@@ -21,6 +21,9 @@ dino2gtfs = "dino2gtfs.cli:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+"dino2gtfs.infrastructure" = ["gtfs_static_schema.sql"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
