@@ -42,6 +42,7 @@ class GtfsExporter:
         self, archive: ZipFile, database: sqlite3.Connection, table: str, notices: bool, network_files: bool
     ) -> None:
         columns = [row[1] for row in database.execute(f'PRAGMA table_info("{table}")')]
+        
         conditional_column = None
         if table == "gtfs_routes" and network_files and "network_id" in columns:
             conditional_column = "network_id"
@@ -87,6 +88,7 @@ class GtfsExporter:
 
     def _write_locations(self, archive: ZipFile, database: sqlite3.Connection) -> None:
         LOGGER.info("writing file locations.geojson")
+        
         cursor = database.execute('SELECT id, type, properties, geometry FROM "gtfs_locations"')
         with archive.open("locations.geojson", "w", force_zip64=True) as binary:
             with io.TextIOWrapper(binary, encoding="utf-8", newline="") as stream:
@@ -123,6 +125,7 @@ class GtfsExporter:
         disabled_tables = set().union(
             *(tables for feature, tables in self.FEATURE_TABLES.items() if not enabled[feature])
         )
+        
         LOGGER.info("starting GTFS export to %s", destination)
         LOGGER.debug("enabled features: %s", enabled)
 
@@ -140,8 +143,7 @@ class GtfsExporter:
                     raise ExportError(f"Invalid GTFS table name: {table}")
 
             selected_tables = [table for table in tables if table[5:] not in disabled_tables]
-            if any(database.execute(f'SELECT 1 FROM "{table}" LIMIT 1').fetchone() is None
-                   for table in selected_tables):
+            if any(database.execute(f'SELECT 1 FROM "{table}" LIMIT 1').fetchone() is None for table in selected_tables):
                 LOGGER.warning("empty GTFS tables are included; file-level GTFS conditions are not validated")
 
             network_files = bool({"gtfs_networks", "gtfs_route_networks"} & set(selected_tables))
