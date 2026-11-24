@@ -5,7 +5,10 @@ from dino2gtfs.infrastructure.sqlite import temporary_database
 from dino2gtfs.transformers.agency import AgencyTransformer
 
 
-SETTINGS = {"agency": {"url": "https://example.org", "timezone": "Europe/Berlin", "language": "de"}}
+SETTINGS = {
+    "defaults": {"agency": {"url": "https://example.org", "timezone": "Europe/Berlin", "language": "de"}},
+    "ids": {"agency": {"mode": "template", "template": "agency:{operator.OP_CODE}"}},
+}
 
 
 def test_transforms_operators_and_deduplicates_versions():
@@ -34,18 +37,23 @@ def test_optional_source_columns_and_language():
     with temporary_database() as db:
         db.execute("CREATE TABLE dino_operator (op_code TEXT, op_long_name TEXT)")
         db.execute("INSERT INTO dino_operator VALUES ('A', 'Agency')")
-        AgencyTransformer().transform(db, {"agency": {"url": "https://example.org", "timezone": "UTC"}})
+        AgencyTransformer().transform(db, {
+            "defaults": {"agency": {"url": "https://example.org", "timezone": "UTC"}},
+            "ids": SETTINGS["ids"],
+        })
         assert db.execute("SELECT agency_id, agency_name, agency_lang FROM gtfs_agency").fetchall() == [
             ("agency:A", "Agency", None)
         ]
 
 
 @pytest.mark.parametrize("settings", [
-    {}, {"agency": None}, {"agency": {"url": "", "timezone": "UTC"}},
-    {"agency": {"url": "https://example.org"}}, {"agency": {"url": "x", "timezone": "UTC", "language": False}},
+    {}, {"defaults": None}, {"defaults": {"agency": None}},
+    {"defaults": {"agency": {"url": "", "timezone": "UTC"}}},
+    {"defaults": {"agency": {"url": "https://example.org"}}},
+    {"defaults": {"agency": {"url": "x", "timezone": "UTC", "language": False}}},
 ])
 def test_rejects_invalid_agency_configuration(settings):
-    with temporary_database() as db, pytest.raises(ConfigurationError, match="agency"):
+    with temporary_database() as db, pytest.raises(ConfigurationError, match="defaults"):
         AgencyTransformer().transform(db, settings)
 
 
@@ -83,3 +91,42 @@ def test_existing_agency_id_is_a_collision():
         db.execute("INSERT INTO gtfs_agency (agency_id, agency_name, agency_url, agency_timezone) VALUES ('agency:A', 'Old', 'x', 'UTC')")
         with pytest.raises(CollisionError, match="agency:A"):
             AgencyTransformer().transform(db, SETTINGS)
+
+
+def test_custom_agency_id_template_uses_operator_columns():
+    settings = {**SETTINGS, "ids": {"agency": {"mode": "template", "template": "op-{operator.OP_CODE}-{operator.OP_BRANCH_NR}"}}}
+    with temporary_database() as db:
+        db.execute("CREATE TABLE dino_operator (OP_CODE TEXT, OP_LONG_NAME TEXT, OP_BRANCH_NR TEXT)")
+        db.execute("INSERT INTO dino_operator VALUES ('A', 'Agency', '02')")
+        AgencyTransformer().transform(db, settings)
+        assert db.execute("SELECT agency_id FROM gtfs_agency").fetchall() == [("op-A-02",)]
+
+
+@pytest.mark.parametrize("agency_ids", [
+    None, {}, {"mode": "global", "template": "agency:{operator.OP_CODE}"},
+    {"mode": "template", "template": ""}, {"mode": "template", "template": "agency:{"},
+    {"mode": "template", "template": "{line.OP_CODE}"},
+    {"mode": "template", "template": "{operator.OP_CODE!r}"},
+    {"mode": "template", "template": "{operator.OP_CODE:>5}"},
+])
+def test_rejects_invalid_id_configuration(agency_ids):
+    settings = {**SETTINGS, "ids": {"agency": agency_ids}}
+    with temporary_database() as db, pytest.raises(ConfigurationError, match="ids.agency"):
+        AgencyTransformer().transform(db, settings)
+
+
+@pytest.mark.parametrize("template, rows, error, message", [
+    ("{operator.MISSING}", [("A", "Agency", "1")], InputError, "missing column"),
+    ("{operator.OP_BRANCH_NR}", [("A", "Agency", "")], InputError, "OP_BRANCH_NR is required"),
+    ("same", [("A", "First", "1"), ("B", "Second", "1")], CollisionError, "operator.din rows 1 and 2"),
+    ("{operator.OP_BRANCH_NR}", [("A", "Agency", "1"), ("A", "Agency", "2")],
+     CollisionError, "operator.din rows 1 and 2"),
+])
+def test_rejects_missing_or_conflicting_template_values(template, rows, error, message):
+    settings = {**SETTINGS, "ids": {"agency": {"mode": "template", "template": template}}}
+    with temporary_database() as db:
+        db.execute("CREATE TABLE dino_operator (OP_CODE TEXT, OP_LONG_NAME TEXT, OP_BRANCH_NR TEXT)")
+        db.executemany("INSERT INTO dino_operator VALUES (?, ?, ?)", rows)
+        with pytest.raises(error, match=message):
+            AgencyTransformer().transform(db, settings)
+        assert db.execute("SELECT * FROM gtfs_agency").fetchall() == []

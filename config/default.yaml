@@ -1,25 +1,77 @@
 input:
   encoding: cp1252
   delimiter: ";"
-  source_crs: null
-agency:
-  timezone: Europe/Berlin
-  language: de
-  url: https://example.org
-  name: Example Agency
+  crs: null
+defaults:
+  agency:
+    timezone: Europe/Berlin
+    language: de
+    url: https://example.org
+    name: Example Agency
 ids:
-  station:
-    mode: global
-    template: "station:{stop.VERSION}:{stop.STOP_NR}"
-  platform:
-    mode: global
-    template: "platform:{stop_point.VERSION}:{stop_point.STOP_NR}:{stop_point.STOP_AREA_NR}:{stop_point.STOPPING_POINT_NR}"
-  route:
+  agency:
     mode: template
+    template: "agency:{operator.OP_CODE}"
+  levels:
+    mode: template
+    template: "level:{stop_area.VERSION}:{stop_area.STOP_NR}:{stop_area.STOP_AREA_LEVEL}"
+  stops:
+    mode: global
+    template: "stop:{gtfs.stop_kind}:{gtfs.stop_source_key}"
+  routes:
+    mode: global
     template: "route:{line.LINE_NR}:{line.OP_CODE}:{gtfs.route_type}"
-  trip:
+  calendar:
+    mode: template
+    template: "service:{gtfs.service_fingerprint}"
+  shapes:
+    mode: template
+    template: "shape:{gtfs.shape_fingerprint}"
+  trips:
     mode: global
     template: "trip:{trip.VERSION}:{trip.LINE_NR}:{trip.STR_LINE_VAR}:{trip.LINE_DIR_NR}:{trip.TRIP_ID}:{gtfs.split_key}"
+  location_groups:
+    mode: template
+    template: "location_group:{gtfs.location_group_fingerprint}"
+  locations:
+    mode: template
+    template: "location:{gtfs.location_fingerprint}"
+  booking_rules:
+    mode: template
+    template: "booking_rule:{gtfs.booking_rule_fingerprint}"
+  fare_attributes:
+    mode: template
+    template: "fare:{gtfs.fare_fingerprint}"
+  timeframes:
+    mode: template
+    template: "timeframe_group:{gtfs.timeframe_group_fingerprint}"
+  rider_categories:
+    mode: template
+    template: "rider_category:{gtfs.rider_category_fingerprint}"
+  fare_media:
+    mode: template
+    template: "fare_media:{gtfs.fare_media_fingerprint}"
+  fare_products:
+    mode: template
+    template: "fare_product:{gtfs.fare_product_fingerprint}"
+  areas:
+    mode: template
+    template: "farearea:{fare_zone.VERSION}:{fare_zone.FARE_ZONE_NR}"
+  networks:
+    mode: template
+    template: "network:{gtfs.network_fingerprint}"
+  pathways:
+    mode: template
+    template: "pathway:{stop_footpath.VERSION}:{stop_footpath.ORIG_STOP_NR}:{stop_footpath.ORIG_STOP_AREA_NR}:{stop_footpath.DEST_STOP_NR}:{stop_footpath.DEST_STOP_AREA_NR}:{gtfs.row_hash}"
+  notices:
+    mode: template
+    template: "notice:{notice.VERSION}:{notice.NOTICE}"
+  trip_segments:
+    mode: template
+    template: "segment:{gtfs.trip_id}:{gtfs.from_stop_sequence}:{gtfs.to_stop_sequence}"
+  attributions:
+    mode: template
+    template: "attribution:{operator.OP_CODE}:{gtfs.row_hash}"
 features:
   transfers: true
   notices: true
