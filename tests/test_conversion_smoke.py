@@ -36,3 +36,19 @@ def test_default_conversion_retains_import_for_debugging(tmp_path):
         assert connection.execute("SELECT count(*) FROM gtfs_stops").fetchone() == (0,)
         assert connection.execute("SELECT agency_id FROM gtfs_agency").fetchall() == [("operator-1",)]
     assert destination.exists()
+
+
+def test_end_to_end_exports_fingerprint_agency_id(tmp_path):
+    source = tmp_path / "input.zip"
+    destination = tmp_path / "output.zip"
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        "defaults:\n  agency:\n    url: https://example.org\n    timezone: UTC\n"
+        "ids:\n  agency:\n    mode: template\n    template: 'agency:{gtfs.fingerprint}'\n"
+    )
+    with ZipFile(source, "w") as archive:
+        archive.writestr("operator.din", "OP_CODE;OP_LONG_NAME\nA;Operator\n")
+    assert main(["convert", "--profile", "dino212_default", "--config", str(config),
+                 "--input", str(source), "--output", str(destination)]) == 0
+    with ZipFile(destination) as archive:
+        assert b"agency:ead76f8e70b5dd3b1a07a92c25c425b2b27198728862103d65c31c621e52a6aa,Operator" in archive.read("agency.txt")

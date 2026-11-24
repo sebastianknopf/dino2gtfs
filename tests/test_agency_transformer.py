@@ -102,6 +102,44 @@ def test_custom_agency_id_template_uses_operator_columns():
         assert db.execute("SELECT agency_id FROM gtfs_agency").fetchall() == [("op-A-02",)]
 
 
+def test_agency_id_template_supports_stable_fingerprint():
+    settings = {**SETTINGS, "ids": {"agency": {"mode": "template", "template": "agency:{gtfs.fingerprint}"}}}
+    with temporary_database() as db:
+        db.execute("CREATE TABLE dino_operator (VERSION TEXT, OP_CODE TEXT, OP_LONG_NAME TEXT)")
+        db.executemany("INSERT INTO dino_operator VALUES (?, ?, ?)", [
+            ("1", "A", "Agency"), ("2", "A", "Agency"), ("1", "B", "Other"),
+        ])
+        AgencyTransformer().transform(db, settings)
+        ids = db.execute("SELECT agency_id FROM gtfs_agency ORDER BY agency_name").fetchall()
+        assert ids[0] == ("agency:ead76f8e70b5dd3b1a07a92c25c425b2b27198728862103d65c31c621e52a6aa",)
+        assert len(ids) == 2 and ids[0] != ids[1]
+
+
+def test_agency_template_supports_generic_entity_and_canonical():
+    settings = {**SETTINGS, "ids": {"agency": {
+        "mode": "template", "template": "{gtfs.entity}:{gtfs.canonical}"
+    }}}
+    with temporary_database() as db:
+        db.execute("CREATE TABLE dino_operator (OP_CODE TEXT, OP_LONG_NAME TEXT)")
+        db.execute("INSERT INTO dino_operator VALUES ('A:1', 'Agency')")
+        AgencyTransformer().transform(db, settings)
+        assert db.execute("SELECT agency_id FROM gtfs_agency").fetchall() == [("agency:3:A:1",)]
+
+
+def test_fingerprint_collision_fails_without_partial_inserts():
+    class CollidingAgencyTransformer(AgencyTransformer):
+        def fingerprint_components(self, sources, context):
+            return ("same",)
+
+    settings = {**SETTINGS, "ids": {"agency": {"mode": "template", "template": "{gtfs.fingerprint}"}}}
+    with temporary_database() as db:
+        db.execute("CREATE TABLE dino_operator (OP_CODE TEXT, OP_LONG_NAME TEXT)")
+        db.executemany("INSERT INTO dino_operator VALUES (?, ?)", [("A", "First"), ("B", "Second")])
+        with pytest.raises(CollisionError, match="operator.din rows 1 and 2"):
+            CollidingAgencyTransformer().transform(db, settings)
+        assert db.execute("SELECT * FROM gtfs_agency").fetchall() == []
+
+
 @pytest.mark.parametrize("agency_ids", [
     None, {}, {"mode": "global", "template": "agency:{operator.OP_CODE}"},
     {"mode": "template", "template": ""}, {"mode": "template", "template": "agency:{"},

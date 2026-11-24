@@ -6,10 +6,12 @@ The repository uses a `src/` layout and clean architectural boundaries.
 - `domain`: calendar and identity logic, including reusable template-mode ID rendering.
 - `infrastructure`: configuration, ZIP, CSV, SQLite and generic DINO import adapters.
 - `gtfs`: profile-independent GTFS ZIP export.
-- `transformers`: reusable GTFS object transformers implementing the `Transformer` protocol.
+- `transformers`: reusable GTFS object transformers inheriting `TransformerBase` and implementing the `Transformer` protocol.
 - `profiles`: profile-specific converter implementations.
 
 The selected profile is mandatory for conversion, but DINO import is profile-independent. The CLI creates an isolated `.db3`, imports the archive, and passes the database directly to the profile converter. Each root-level `.din` file is imported into a `dino_` table named after the file without its extension. Its headers define `TEXT` columns; no indices are created. Import is streamed in batches of 500 rows. By default the database is temporary and removed on both success and failure; `--database` replaces the specified file and retains the new database. Successful conversion changes are committed, while uncommitted changes are rolled back on failure.
+
+`TransformerBase` supplies the `gtfs.entity`, `gtfs.canonical` and `gtfs.fingerprint` template fields. Each transformer implements `fingerprint_components` for its canonical entity identity; the base class computes the key or hash only when requested. The agency transformer uses the operator code, and transformers remain responsible for detecting identity collisions.
 
 The database adapter initializes the shared `gtfs_` tables as soon as the connection opens. The packaged `gtfs_static_schema.sql` covers the GTFS Schedule reference and the notice, notice assignment and trip segment fields in [google/transit#638](https://github.com/google/transit/pull/638). The GTFS tables have no indexes or foreign keys; primary-key uniqueness and references are not enforced by SQLite.
 

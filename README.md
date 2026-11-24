@@ -9,6 +9,7 @@ dino2gtfs convert --profile dino212_default --config config/default.yaml --input
 ```
 
 The profile and YAML configuration are mandatory. See a sample configuration in [config/default.yaml](config/default.yaml).
+For more information, see the [user manual](docs/manual/index.md).
 
 Use `--database output/database.db3` to retain the SQLite database for inspection. Without this option, the database is temporary.
 

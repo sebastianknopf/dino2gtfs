@@ -14,6 +14,7 @@ class IdTemplate:
     """
 
     def __init__(self, settings: Mapping[str, Any], entity: str, sources: Mapping[str, str]) -> None:
+        self.entity = entity
         self._config_key = f"ids.{entity}"
         self._sources = dict(sources)
         ids = settings.get("ids")
@@ -41,6 +42,14 @@ class IdTemplate:
                     raise ConfigurationError(f"Invalid placeholder in {self._config_key}.template: {field!r}")
             
             self._parts.append((literal, field))
+
+    def requires_field(self, source: str, name: str) -> bool:
+        """Return whether the template references a source field."""
+        return any(
+            field is not None and field.partition(".")[0] == source
+            and field.partition(".")[2].upper() == name.upper()
+            for _, field in self._parts
+        )
 
     def validate_fields(self, fields: Mapping[str, Collection[str]]) -> None:
         """Check source field availability even when no records are present."""

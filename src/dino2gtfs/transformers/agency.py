@@ -5,15 +5,22 @@ from collections.abc import Mapping
 from typing import Any
 
 from dino2gtfs.domain.errors import CollisionError, ConfigurationError, InputError
-from dino2gtfs.domain.id_template import IdTemplate
-from dino2gtfs.transformers.intf_transformer import Transformer
+from dino2gtfs.transformers.base_transformer import TransformerBase
 
 LOGGER = logging.getLogger(__name__)
 NAME_COLUMNS = ("OP_TRADING_NAME", "OP_LONG_NAME", "OP_PUBLIC_SHORT")
 
 
-class AgencyTransformer(Transformer):
+class AgencyTransformer(TransformerBase):
     """Create one agency per DINO operator code."""
+
+    def fingerprint_components(
+        self, sources: Mapping[str, Mapping[str, object]], context: str
+    ) -> tuple[str, ...]:
+        code = sources.get("operator", {}).get("OP_CODE")
+        if not isinstance(code, str) or not code.strip():
+            raise InputError(f"{context}: OP_CODE is required")
+        return (code,)
 
     def transform(self, database: sqlite3.Connection, settings: Mapping[str, Any]) -> None:
         defaults = settings.get("defaults")
@@ -32,7 +39,7 @@ class AgencyTransformer(Transformer):
         if language is not None and (not isinstance(language, str) or not language.strip()):
             raise ConfigurationError("defaults.agency.language must be a non-empty string or null")
 
-        template = IdTemplate(settings, "agency", {"operator": "operator.din"})
+        template = self.make_id_template(settings, "agency", {"operator": "operator.din"})
 
         column_names = [row[1].upper() for row in database.execute('PRAGMA table_info("dino_operator")')]
         columns = set(column_names)
@@ -42,7 +49,7 @@ class AgencyTransformer(Transformer):
         if "OP_CODE" not in columns or not columns.intersection(NAME_COLUMNS):
             raise InputError("operator.din requires OP_CODE and at least one public name column")
         
-        template.validate_fields({"operator": columns})
+        self.validate_template_fields(template, {"operator": columns})
 
         operators: dict[str, tuple[str, str, int]] = {}
         identifiers: dict[str, tuple[str, int]] = {}
@@ -56,7 +63,7 @@ class AgencyTransformer(Transformer):
             if name is None:
                 raise InputError(f"operator.din row {rowid}: public operator name is required for {code!r}")
 
-            identifier = template.render({"operator": row}, f"operator.din row {rowid}")
+            identifier = self.render_id(template, {"operator": row}, f"operator.din row {rowid}")
 
             if code in operators and operators[code][:2] != (identifier, name):
                 raise CollisionError(
