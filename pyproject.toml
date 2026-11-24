@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = "Apache-2.0"
 authors = [{name = "dino2gtfs contributors"}]
-dependencies = ["PyYAML>=6.0,<7"]
+dependencies = ["PyYAML>=6.0,<7", "pyproj>=3.6,<4"]
 
 [project.optional-dependencies]
 test = ["pytest>=8,<10"]

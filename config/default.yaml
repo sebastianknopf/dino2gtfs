@@ -17,8 +17,8 @@ ids:
     mode: template
     template: "level:{stop_area.VERSION}:{stop_area.STOP_NR}:{stop_area.STOP_AREA_LEVEL}"
   stops:
-    mode: global
-    template: "stop:{gtfs.stop_kind}:{gtfs.stop_source_key}"
+    mode: template
+    template: "{gtfs.canonical}"
   routes:
     mode: global
     template: "route:{line.LINE_NR}:{line.OP_CODE}:{gtfs.route_type}"

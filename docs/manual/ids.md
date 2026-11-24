@@ -21,13 +21,14 @@ Only fields supplied by the selected transformer are available. A missing column
 
 ## Virtual GTFS Placeholders
 
-These values are provided by the shared transformer base, not read from DINO columns:
+These values are computed by transformers, not read from DINO columns:
 
 | Placeholder | Value |
 |---|---|
 | `{gtfs.entity}` | The entity name in `ids.<GTFS entity>`. |
 | `{gtfs.canonical}` | The transformer's ordered canonical identity components, each prefixed by its UTF-8 byte length and a colon. For components `ab` and `c`, the value is `2:ab1:c`. |
 | `{gtfs.fingerprint}` | A lowercase SHA-256 hexadecimal digest over the ordered canonical identity components, each UTF-8 encoded and prefixed by its byte length as an eight-byte big-endian integer. |
+| `{gtfs.stop_kind}` | For stops, `station` or `platform`. |
 
 The transformer defines the identity components; they are not otherwise normalized. The canonical key exposes their values, while the fingerprint is compact. Both are stable for the same ordered components. Collision checks still apply, especially when combining placeholders with other values.
 

@@ -90,19 +90,26 @@ class TransformerBase(Transformer, ABC):
         
         return IdTemplate(settings, entity, {**sources, "gtfs": "GTFS context"})
 
-    def validate_template_fields(self, template: IdTemplate, fields: Mapping[str, Collection[str]]) -> None:
+    def validate_template_fields(
+        self, template: IdTemplate, fields: Mapping[str, Collection[str]], virtual_fields: Collection[str] = ()
+    ) -> None:
         if "gtfs" in fields:
             raise ValueError("gtfs is reserved for virtual template fields")
         
-        template.validate_fields({**fields, "gtfs": ("entity", "canonical", "fingerprint")})
+        template.validate_fields({**fields, "gtfs": ("entity", "canonical", "fingerprint", *virtual_fields)})
 
     def render_id(
-        self, template: IdTemplate, sources: Mapping[str, Mapping[str, object]], context: str
+        self, template: IdTemplate, sources: Mapping[str, Mapping[str, object]], context: str,
+        virtual_fields: Mapping[str, str] | None = None,
     ) -> str:
         if "gtfs" in sources:
             raise ValueError("gtfs is reserved for virtual template fields")
         
         virtual = {"entity": template.entity}
+        if virtual_fields:
+            if {key.upper() for key in virtual_fields} & {"ENTITY", "CANONICAL", "FINGERPRINT"}:
+                raise ValueError("shared GTFS template fields cannot be overridden")
+            virtual.update(virtual_fields)
         
         needs_key = template.requires_field("gtfs", "canonical")
         needs_fingerprint = template.requires_field("gtfs", "fingerprint")
