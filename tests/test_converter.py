@@ -1,11 +1,20 @@
-import logging
 import sqlite3
 from pathlib import Path
-from dino2gtfs.profiles.dino212_default.converter import Dino212Converter
+from unittest.mock import Mock
 
-def test_converter_logs_missing_mapping_without_failing(tmp_path: Path, caplog):
+from dino2gtfs.profiles.dino212_default.converter import Dino212Converter
+from dino2gtfs.transformers.agency import AgencyTransformer
+
+def test_converter_runs_selected_transformers(tmp_path: Path):
+    transform = Mock()
+
+    class CustomAgencyTransformer(AgencyTransformer):
+        def transform(self, database, settings):
+            transform(database, settings)
+
+    converter = Dino212Converter()
+    converter.transformers = (CustomAgencyTransformer,)
+    settings = {"agency": {"timezone": "UTC"}}
     with sqlite3.connect(":memory:") as db:
-        with caplog.at_level(logging.WARNING, logger="dino2gtfs.profiles.dino212_default.converter"):
-            Dino212Converter().convert(db, tmp_path / "out.zip", {})
-    assert "field mapping is not implemented" in caplog.text
-    assert not (tmp_path / "out.zip").exists()
+        converter.convert(db, tmp_path / "out.zip", settings)
+        transform.assert_called_once_with(db, settings)

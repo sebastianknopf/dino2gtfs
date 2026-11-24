@@ -6,6 +6,7 @@ The repository uses a `src/` layout and clean architectural boundaries.
 - `domain`: pure calendar and identity functions.
 - `infrastructure`: configuration, ZIP, CSV, SQLite and generic DINO import adapters.
 - `gtfs`: profile-independent GTFS ZIP export.
+- `transformers`: reusable GTFS object transformers implementing the `Transformer` protocol.
 - `profiles`: profile-specific converter implementations.
 
 The selected profile is mandatory for conversion, but DINO import is profile-independent. The CLI creates an isolated `.db3`, imports the archive, and passes the database directly to the profile converter. Each root-level `.din` file is imported into a `dino_` table named after the file without its extension. Its headers define `TEXT` columns; no indices are created. Import is streamed in batches of 500 rows. By default the database is temporary and removed on both success and failure; `--database` replaces the specified file and retains the new database. Successful conversion changes are committed, while uncommitted changes are rolled back on failure.
