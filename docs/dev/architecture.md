@@ -3,7 +3,7 @@
 The repository uses a `src/` layout and clean architectural boundaries.
 
 - `application`: `Protocol` ports.
-- `domain`: pure calendar and identity functions.
+- `domain`: calendar and identity logic, including reusable template-mode ID rendering.
 - `infrastructure`: configuration, ZIP, CSV, SQLite and generic DINO import adapters.
 - `gtfs`: profile-independent GTFS ZIP export.
 - `transformers`: reusable GTFS object transformers implementing the `Transformer` protocol.

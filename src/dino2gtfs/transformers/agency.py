@@ -2,10 +2,10 @@
 import logging
 import sqlite3
 from collections.abc import Mapping
-from string import Formatter
 from typing import Any
 
 from dino2gtfs.domain.errors import CollisionError, ConfigurationError, InputError
+from dino2gtfs.domain.id_template import IdTemplate
 from dino2gtfs.transformers.intf_transformer import Transformer
 
 LOGGER = logging.getLogger(__name__)
@@ -32,28 +32,7 @@ class AgencyTransformer(Transformer):
         if language is not None and (not isinstance(language, str) or not language.strip()):
             raise ConfigurationError("defaults.agency.language must be a non-empty string or null")
 
-        ids = settings.get("ids")
-        if not isinstance(ids, Mapping) or not isinstance(ids.get("agency"), Mapping):
-            raise ConfigurationError("ids.agency must be a mapping with mode and template")
-        
-        agency_ids = ids["agency"]
-        if agency_ids.get("mode") != "template":
-            raise ConfigurationError("ids.agency.mode must be template")
-        
-        template = agency_ids.get("template")
-        if not isinstance(template, str) or not template.strip():
-            raise ConfigurationError("ids.agency.template must be a non-empty string")
-        
-        try:
-            parts = list(Formatter().parse(template))
-        except ValueError as exc:
-            raise ConfigurationError(f"Invalid ids.agency.template: {exc}") from exc
-        for _, field, format_spec, conversion in parts:
-            if field is not None and (
-                not field.startswith("operator.") or not field[len("operator."):]
-                or format_spec or conversion is not None
-            ):
-                raise ConfigurationError(f"Invalid placeholder in ids.agency.template: {field!r}")
+        template = IdTemplate(settings, "agency", {"operator": "operator.din"})
 
         column_names = [row[1].upper() for row in database.execute('PRAGMA table_info("dino_operator")')]
         columns = set(column_names)
@@ -63,9 +42,7 @@ class AgencyTransformer(Transformer):
         if "OP_CODE" not in columns or not columns.intersection(NAME_COLUMNS):
             raise InputError("operator.din requires OP_CODE and at least one public name column")
         
-        for _, field, _, _ in parts:
-            if field is not None and field[len("operator."):].upper() not in columns:
-                raise InputError(f"operator.din is missing column for ids.agency.template: {field}")
+        template.validate_fields({"operator": columns})
 
         operators: dict[str, tuple[str, str, int]] = {}
         identifiers: dict[str, tuple[str, int]] = {}
@@ -79,19 +56,7 @@ class AgencyTransformer(Transformer):
             if name is None:
                 raise InputError(f"operator.din row {rowid}: public operator name is required for {code!r}")
 
-            id_parts = []
-            for literal, field, _, _ in parts:
-                id_parts.append(literal)
-                if field is not None:
-                    value = row[field[len("operator."):].upper()]
-                    if not isinstance(value, str) or not value.strip():
-                        raise InputError(f"operator.din row {rowid}: {field} is required by ids.agency.template")
-                    
-                    id_parts.append(value)
-            
-            identifier = "".join(id_parts)
-            if not identifier.strip():
-                raise InputError(f"operator.din row {rowid}: ids.agency.template produced an empty ID")
+            identifier = template.render({"operator": row}, f"operator.din row {rowid}")
 
             if code in operators and operators[code][:2] != (identifier, name):
                 raise CollisionError(
