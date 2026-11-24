@@ -12,4 +12,6 @@ The default profile currently converts agencies only. Other GTFS tables are expo
 
 ## Configuration
 
+- Set `defaults.<entity>.<column>` using the exact GTFS table and column names. Configured values override transformed values, including with `null`. Unknown entities or fields are errors. ID columns (`id`, names ending in `_id`, and `parent_station`) cannot be defaulted; configure IDs separately. Defaults may be strings, numbers, booleans or `null`.
+- The sample agency name and URL are examples; replace them with authoritative values before producing a feed.
 - [GTFS ID Templates](ids.md): configure identifiers and use the fingerprint placeholder.

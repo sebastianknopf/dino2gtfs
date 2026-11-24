@@ -23,21 +23,20 @@ class AgencyTransformer(TransformerBase):
         return (code,)
 
     def transform(self, database: sqlite3.Connection, settings: Mapping[str, Any]) -> None:
-        defaults = settings.get("defaults")
-        if not isinstance(defaults, Mapping):
-            raise ConfigurationError("defaults must be a mapping")
-        
-        agency = defaults.get("agency")
-        if not isinstance(agency, Mapping):
-            raise ConfigurationError("defaults.agency must be a mapping with url and timezone")
+        defaults = self.configured_defaults(database, settings, "agency")
 
-        for field in ("url", "timezone"):
-            if not isinstance(agency.get(field), str) or not agency[field].strip():
+        for field in ("agency_url", "agency_timezone"):
+            if not isinstance(defaults.get(field), str) or not defaults[field].strip():
                 raise ConfigurationError(f"defaults.agency.{field} must be a non-empty string")
         
-        language = agency.get("language")
+        language = defaults.get("agency_lang")
         if language is not None and (not isinstance(language, str) or not language.strip()):
-            raise ConfigurationError("defaults.agency.language must be a non-empty string or null")
+            raise ConfigurationError("defaults.agency.agency_lang must be a non-empty string or null")
+        
+        if "agency_name" in defaults and (
+            not isinstance(defaults["agency_name"], str) or not defaults["agency_name"].strip()
+        ):
+            raise ConfigurationError("defaults.agency.agency_name must be a non-empty string")
 
         template = self.make_id_template(settings, "agency", {"operator": "operator.din"})
 
@@ -46,7 +45,7 @@ class AgencyTransformer(TransformerBase):
         if not columns:
             raise InputError("Missing DINO source file operator.din")
         
-        if "OP_CODE" not in columns or not columns.intersection(NAME_COLUMNS):
+        if "OP_CODE" not in columns or ("agency_name" not in defaults and not columns.intersection(NAME_COLUMNS)):
             raise InputError("operator.din requires OP_CODE and at least one public name column")
         
         self.validate_template_fields(template, {"operator": columns})
@@ -59,7 +58,9 @@ class AgencyTransformer(TransformerBase):
             if not isinstance(code, str) or not code.strip():
                 raise InputError(f"operator.din row {rowid}: OP_CODE is required")
             
-            name = next((row[column] for column in NAME_COLUMNS if isinstance(row.get(column), str) and row[column].strip()), None)
+            name = defaults.get("agency_name")
+            if name is None:
+                name = next((row[column] for column in NAME_COLUMNS if isinstance(row.get(column), str) and row[column].strip()), None)
             if name is None:
                 raise InputError(f"operator.din row {rowid}: public operator name is required for {code!r}")
 
@@ -92,11 +93,10 @@ class AgencyTransformer(TransformerBase):
                     f"(existing agency and operator.din row {rowid})"
                 )
 
-        database.executemany(
-            "INSERT INTO gtfs_agency (agency_id, agency_name, agency_url, agency_timezone, agency_lang) "
-            "VALUES (?, ?, ?, ?, ?)",
-            ((identifier, name, agency["url"], agency["timezone"], language)
-             for identifier, name, _ in operators.values()),
+        self.insert_with_defaults(
+            database, "agency", ("agency_id", "agency_name"),
+            ({"agency_id": identifier, "agency_name": name} for identifier, name, _ in operators.values()),
+            defaults,
         )
         
         LOGGER.info("transformed %d DINO operators into GTFS agencies", len(operators))

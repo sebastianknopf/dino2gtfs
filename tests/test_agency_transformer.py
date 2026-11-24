@@ -6,7 +6,9 @@ from dino2gtfs.transformers.agency import AgencyTransformer
 
 
 SETTINGS = {
-    "defaults": {"agency": {"url": "https://example.org", "timezone": "Europe/Berlin", "language": "de"}},
+    "defaults": {"agency": {
+        "agency_url": "https://example.org", "agency_timezone": "Europe/Berlin", "agency_lang": "de"
+    }},
     "ids": {"agency": {"mode": "template", "template": "agency:{operator.OP_CODE}"}},
 }
 
@@ -38,7 +40,7 @@ def test_optional_source_columns_and_language():
         db.execute("CREATE TABLE dino_operator (op_code TEXT, op_long_name TEXT)")
         db.execute("INSERT INTO dino_operator VALUES ('A', 'Agency')")
         AgencyTransformer().transform(db, {
-            "defaults": {"agency": {"url": "https://example.org", "timezone": "UTC"}},
+            "defaults": {"agency": {"agency_url": "https://example.org", "agency_timezone": "UTC"}},
             "ids": SETTINGS["ids"],
         })
         assert db.execute("SELECT agency_id, agency_name, agency_lang FROM gtfs_agency").fetchall() == [
@@ -46,11 +48,40 @@ def test_optional_source_columns_and_language():
         ]
 
 
+def test_defaults_override_source_and_add_gtfs_fields():
+    settings = {**SETTINGS, "defaults": {"agency": {
+        "agency_url": "https://example.org", "agency_timezone": "UTC", "agency_name": "Configured",
+        "agency_phone": "+49 123", "agency_email": "contact@example.org", "cemv_support": 0,
+    }}}
+    with temporary_database() as db:
+        db.execute("CREATE TABLE dino_operator (OP_CODE TEXT, OP_LONG_NAME TEXT)")
+        db.executemany("INSERT INTO dino_operator VALUES (?, ?)", [("A", "Source"), ("A", "Changed"), ("B", "")])
+        AgencyTransformer().transform(db, settings)
+        assert db.execute(
+            "SELECT agency_id, agency_name, agency_phone, agency_email, cemv_support FROM gtfs_agency ORDER BY agency_id"
+        ).fetchall() == [
+            ("agency:A", "Configured", "+49 123", "contact@example.org", 0),
+            ("agency:B", "Configured", "+49 123", "contact@example.org", 0),
+        ]
+
+
+def test_default_name_allows_operator_without_name_column():
+    settings = {**SETTINGS, "defaults": {"agency": {
+        **SETTINGS["defaults"]["agency"], "agency_name": "Configured"
+    }}}
+    with temporary_database() as db:
+        db.execute("CREATE TABLE dino_operator (OP_CODE TEXT)")
+        db.execute("INSERT INTO dino_operator VALUES ('A')")
+        AgencyTransformer().transform(db, settings)
+        assert db.execute("SELECT agency_name FROM gtfs_agency").fetchall() == [("Configured",)]
+
+
 @pytest.mark.parametrize("settings", [
     {}, {"defaults": None}, {"defaults": {"agency": None}},
-    {"defaults": {"agency": {"url": "", "timezone": "UTC"}}},
-    {"defaults": {"agency": {"url": "https://example.org"}}},
-    {"defaults": {"agency": {"url": "x", "timezone": "UTC", "language": False}}},
+    {"defaults": {"agency": {"agency_url": "", "agency_timezone": "UTC"}}},
+    {"defaults": {"agency": {"agency_url": "https://example.org"}}},
+    {"defaults": {"agency": {"agency_url": "x", "agency_timezone": "UTC", "agency_lang": False}}},
+    {"defaults": {"agency": {"agency_url": "x", "agency_timezone": "UTC", "agency_name": None}}},
 ])
 def test_rejects_invalid_agency_configuration(settings):
     with temporary_database() as db, pytest.raises(ConfigurationError, match="defaults"):

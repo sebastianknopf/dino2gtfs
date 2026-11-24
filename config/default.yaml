@@ -4,10 +4,11 @@ input:
   crs: null
 defaults:
   agency:
-    timezone: Europe/Berlin
-    language: de
-    url: https://example.org
-    name: Example Agency
+    agency_timezone: Europe/Berlin
+    agency_lang: de
+    agency_url: https://example.org
+    agency_email: example@example.org
+    cemv_support: 0
 ids:
   agency:
     mode: template

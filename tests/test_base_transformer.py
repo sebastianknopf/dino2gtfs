@@ -1,6 +1,7 @@
 import pytest
 
-from dino2gtfs.domain.errors import InputError
+from dino2gtfs.domain.errors import ConfigurationError, InputError
+from dino2gtfs.infrastructure.sqlite import temporary_database
 from dino2gtfs.transformers.base_transformer import TransformerBase
 
 
@@ -92,3 +93,37 @@ def test_key_and_fingerprint_share_the_same_identity_components():
         "1:A:ead76f8e70b5dd3b1a07a92c25c425b2b27198728862103d65c31c621e52a6aa"
     )
     assert transformer.calls == 1
+
+
+def test_defaults_apply_to_any_gtfs_entity_and_override_values():
+    transformer = ExampleTransformer(())
+    with temporary_database() as db:
+        defaults = transformer.configured_defaults(db, {"defaults": {
+            "stops": {"stop_name": "Configured", "wheelchair_boarding": 0, "stop_desc": None}
+        }}, "stops")
+        assert transformer.apply_defaults(
+            {"stop_id": "s", "stop_name": "Source", "wheelchair_boarding": 1, "stop_desc": "Source"},
+            defaults,
+        ) == {"stop_id": "s", "stop_name": "Configured", "wheelchair_boarding": 0, "stop_desc": None}
+        transformer.insert_with_defaults(
+            db, "stops", ("stop_id", "stop_name"),
+            [{"stop_id": "s", "stop_name": "Source"}], defaults,
+        )
+        assert db.execute("SELECT stop_id, stop_name, wheelchair_boarding, stop_desc FROM gtfs_stops").fetchall() == [
+            ("s", "Configured", 0, None)
+        ]
+
+
+@pytest.mark.parametrize("defaults, message", [
+    ({"stops": {"STOP_NAME": "Wrong case"}}, "Unknown GTFS field"),
+    ({"stops": {"missing": "x"}}, "Unknown GTFS field"),
+    ({"missing": {}}, "Unknown GTFS entity"),
+    ({"stops": {"stop_id": "x"}}, "ID field"),
+    ({"stops": {"parent_station": "x"}}, "ID field"),
+    ({"locations": {"id": "x"}}, "ID field"),
+    ({"stops": {"stop_name": ["invalid"]}}, "scalar SQLite value"),
+    ({"stops": {"stop_lat": float("nan")}}, "must be finite"),
+])
+def test_invalid_defaults_are_rejected_even_for_other_entities(defaults, message):
+    with temporary_database() as db, pytest.raises(ConfigurationError, match=message):
+        ExampleTransformer(()).configured_defaults(db, {"defaults": defaults}, "agency")
