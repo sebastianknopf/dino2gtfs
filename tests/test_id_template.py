@@ -28,3 +28,18 @@ def test_id_template_rejects_unavailable_namespace():
     with pytest.raises(ConfigurationError, match=r"ids.routes.template"):
         IdTemplate({"ids": {"routes": {"mode": "template", "template": "{trip.TRIP_ID}"}}},
                    "routes", {"line": "line.din"})
+
+
+def test_optional_template_field_does_not_relax_other_fields_or_allow_empty_ids():
+    settings = {"ids": {"routes": {"mode": "template", "template": "{line.LINE_NR}:{line.op_code}"}}}
+    template = IdTemplate(settings, "routes", {"line": "line.din"})
+    assert template.render(
+        {"line": {"LINE_NR": "42"}}, "line.din row 1", optional_fields=(("line", "OP_CODE"),)
+    ) == "42:"
+    with pytest.raises(InputError, match="line.LINE_NR is required"):
+        template.render({"line": {}}, "line.din row 1", optional_fields=(("line", "OP_CODE"),))
+    empty = IdTemplate(
+        {"ids": {"routes": {"mode": "template", "template": "{line.OP_CODE}"}}}, "routes", {"line": "line.din"}
+    )
+    with pytest.raises(InputError, match="produced an empty ID"):
+        empty.render({"line": {}}, "line.din row 1", optional_fields=(("line", "OP_CODE"),))

@@ -4,6 +4,7 @@ from dino2gtfs.domain.errors import ConfigurationError, InputError
 from dino2gtfs.infrastructure.sqlite import temporary_database
 from dino2gtfs.transformers.agency import AgencyTransformer
 from dino2gtfs.transformers.base_transformer import TransformerBase
+from dino2gtfs.transformers.routes import RoutesTransformer
 from dino2gtfs.transformers.stops import StopsTransformer
 
 
@@ -30,10 +31,12 @@ def test_initialize_creates_mapping_tables_without_relations_or_indexes():
     with temporary_database() as db:
         AgencyTransformer().initialize(db, {})
         StopsTransformer().initialize(db, {})
+        RoutesTransformer().initialize(db, {})
         for table, columns in (
             ("map_operator_2_agency", ["VERSION", "OP_CODE", "gtfs_id"]),
             ("map_stop_2_stops", ["VERSION", "STOP_ID", "gtfs_id"]),
             ("map_stop_point_2_stops", ["VERSION", "STOP_ID", "STOP_AREA_ID", "STOPPING_POINT_NR", "gtfs_id"]),
+            ("map_line_2_routes", ["VERSION", "LINE_NR", "STR_LINE_VAR", "LINE_DIR_NR", "gtfs_id"]),
         ):
             info = db.execute("SELECT * FROM pragma_table_info(?)", (table,)).fetchall()
             assert [(row[1], row[2], row[5]) for row in info] == [(column, "TEXT", 0) for column in columns]
