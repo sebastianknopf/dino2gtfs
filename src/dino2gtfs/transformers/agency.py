@@ -66,8 +66,7 @@ class AgencyTransformer(TransformerBase):
         self.validate_template_fields(template, {"operator": columns})
 
         operators: dict[str, tuple[str, str, int]] = {}
-        mappings: dict[tuple[object, str], str] = {}
-        mapping_rows: dict[tuple[object, str], int] = {}
+        mappings: dict[tuple[object, str], None] = {}
         for rowid, *values in database.execute('SELECT rowid, * FROM "dino_operator"'):
             row = dict(zip(column_names, values))
             code = row["OP_CODE"]
@@ -80,47 +79,48 @@ class AgencyTransformer(TransformerBase):
                 raise InputError(f"operator.din row {rowid}: public operator name is required for {code!r}")
 
             identifier = self.render_id(template, {"operator": row}, f"operator.din row {rowid}")
+            previous = operators.get(code)
+            if previous is not None and previous[1] != name:
+                LOGGER.warning(
+                    "operator.din row %s: agency name %r differs from %r in operator.din row %s "
+                    "for OP_CODE %r; using the last operator.din entry",
+                    rowid, name, previous[1], previous[2], code,
+                )
 
-            if identifier in operators and operators[identifier][:2] != (code, name):
-                raise CollisionError(
-                    f"Identity collision in gtfs_agency: {identifier!r} "
-                    f"(operator.din rows {operators[identifier][2]} and {rowid})"
-                )
-            
-            mapping_key = (row.get("VERSION"), code)
-            if mapping_key in mappings and mappings[mapping_key] != identifier:
-                raise CollisionError(
-                    f"Conflicting map_operator_2_agency identity for VERSION {mapping_key[0]!r}, "
-                    f"OP_CODE {code!r} (operator.din rows {mapping_rows[mapping_key]} and {rowid})"
-                )
-            
-            operators.setdefault(identifier, (code, name, rowid))
-            mappings[mapping_key] = identifier
-            mapping_rows.setdefault(mapping_key, rowid)
-            
+            operators[code] = (identifier, name, rowid)
+            mappings[(row.get("VERSION"), code)] = None
+
         if not operators:
             raise InputError("operator.din contains no operators")
 
         existing_ids = {row[0] for row in database.execute("SELECT agency_id FROM gtfs_agency")}
-        for identifier, (_, _, rowid) in operators.items():
+        identifiers: dict[str, int] = {}
+        for identifier, _, rowid in operators.values():
             if identifier in existing_ids:
                 raise CollisionError(
                     f"Identity collision in gtfs_agency: {identifier!r} "
                     f"(existing agency and operator.din row {rowid})"
                 )
 
+            if identifier in identifiers:
+                raise CollisionError(
+                    f"Identity collision in gtfs_agency: {identifier!r} "
+                    f"(operator.din rows {identifiers[identifier]} and {rowid})"
+                )
+            identifiers[identifier] = rowid
+
         self.insert_with_configuration(
             database, "agency", ("agency_id", "agency_name"),
             (
                 {"agency_id": identifier, "agency_name": name}
-                for identifier, (_, name, _) in operators.items()
+                for identifier, name, _ in operators.values()
             ),
             defaults, overrides,
         )
         
         database.executemany(
             "INSERT INTO map_operator_2_agency (VERSION, OP_CODE, gtfs_id) VALUES (?, ?, ?)",
-            ((version, code, identifier) for (version, code), identifier in mappings.items()),
+            ((version, code, operators[code][0]) for version, code in mappings),
         )
         
         LOGGER.info("transformed %d DINO operators into GTFS agencies", len(operators))

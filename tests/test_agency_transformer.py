@@ -1,8 +1,11 @@
+import logging
+
 import pytest
 
 from dino2gtfs.domain.errors import CollisionError, ConfigurationError, InputError
 from dino2gtfs.infrastructure.sqlite import temporary_database
 from dino2gtfs.transformers.agency import AgencyTransformer
+from dino2gtfs.transformers.routes import RoutesTransformer
 
 
 SETTINGS = {
@@ -136,14 +139,21 @@ def test_rejects_missing_operator_data(columns, rows, message):
         assert db.execute("SELECT * FROM gtfs_agency").fetchall() == []
 
 
-def test_conflicting_operator_names_fail_without_partial_inserts():
+def test_conflicting_operator_names_warn_and_use_last_name(caplog):
     with temporary_database() as db:
         db.execute("CREATE TABLE dino_operator (OP_CODE TEXT, OP_LONG_NAME TEXT)")
         db.executemany("INSERT INTO dino_operator VALUES (?, ?)", [("A", "First"), ("B", "Other"), ("A", "Second")])
-        with pytest.raises(CollisionError, match="agency:A.*operator.din rows 1 and 3"):
+        with caplog.at_level(logging.WARNING):
             transform(db, SETTINGS)
-        assert db.execute("SELECT * FROM gtfs_agency").fetchall() == []
-        assert db.execute("SELECT * FROM map_operator_2_agency").fetchall() == []
+        assert db.execute("SELECT agency_id, agency_name FROM gtfs_agency ORDER BY agency_id").fetchall() == [
+            ("agency:A", "Second"), ("agency:B", "Other"),
+        ]
+        assert db.execute("SELECT * FROM map_operator_2_agency ORDER BY OP_CODE").fetchall() == [
+            (None, "A", "agency:A"), (None, "B", "agency:B"),
+        ]
+        warnings = [record.message for record in caplog.records if record.levelno == logging.WARNING]
+        assert len(warnings) == 1
+        assert all(value in warnings[0] for value in ("operator.din row 1", "operator.din row 3", "First", "Second", "A"))
 
 
 def test_existing_agency_id_is_a_collision():
@@ -188,22 +198,56 @@ def test_agency_template_supports_generic_entity_and_canonical():
         assert db.execute("SELECT agency_id FROM gtfs_agency").fetchall() == [("agency:2:A:1",)]
 
 
-def test_same_operator_code_maps_to_distinct_canonical_agencies_by_version():
+def test_same_operator_code_merges_versions_using_last_canonical_id(caplog):
     settings = {**SETTINGS, "ids": {"agency": {
         "mode": "template", "template": "{gtfs.canonical}"
     }}}
     with temporary_database() as db:
         db.execute("CREATE TABLE dino_operator (VERSION TEXT, OP_CODE TEXT, OP_LONG_NAME TEXT)")
         db.executemany("INSERT INTO dino_operator VALUES (?, ?, ?)", [
-            ("1", "A", "First version"), ("2", "A", "Second version")
+            ("2", "A", "First version"), ("3", "A", "Second version"), ("1", "A", "Second version"),
+            ("1", "B", "Other"),
         ])
-        transform(db, settings)
+        with caplog.at_level(logging.WARNING):
+            transform(db, settings)
         assert db.execute(
             "SELECT agency_id, agency_name FROM gtfs_agency ORDER BY agency_id"
-        ).fetchall() == [("1:A", "First version"), ("2:A", "Second version")]
+        ).fetchall() == [("1:A", "Second version"), ("1:B", "Other")]
         assert db.execute(
-            "SELECT VERSION, OP_CODE, gtfs_id FROM map_operator_2_agency ORDER BY VERSION"
-        ).fetchall() == [("1", "A", "1:A"), ("2", "A", "2:A")]
+            "SELECT VERSION, OP_CODE, gtfs_id FROM map_operator_2_agency ORDER BY VERSION, OP_CODE"
+        ).fetchall() == [("1", "A", "1:A"), ("1", "B", "1:B"), ("2", "A", "1:A"), ("3", "A", "1:A")]
+        warnings = [record.message for record in caplog.records if record.levelno == logging.WARNING]
+        assert len(warnings) == 1
+        assert "operator.din row 1" in warnings[0] and "operator.din row 2" in warnings[0]
+
+
+def test_routes_resolve_each_operator_version_to_merged_agency():
+    settings = {
+        **SETTINGS,
+        "defaults": {**SETTINGS["defaults"], "routes": {"route_type": 3}},
+        "ids": {"agency": {"mode": "template", "template": "{gtfs.canonical}"},
+                "routes": {"mode": "global"}},
+    }
+    with temporary_database() as db:
+        db.execute("CREATE TABLE dino_operator (VERSION TEXT, OP_CODE TEXT, OP_LONG_NAME TEXT)")
+        db.executemany("INSERT INTO dino_operator VALUES (?, ?, ?)", [
+            ("1", "A", "Agency"), ("2", "A", "Agency"),
+        ])
+        db.execute(
+            "CREATE TABLE dino_line (VERSION TEXT, LINE_NR TEXT, STR_LINE_VAR TEXT, "
+            "LINE_DIR_NR TEXT, OP_CODE TEXT, LINE_NAME TEXT, GLOBAL_ID TEXT)"
+        )
+        db.executemany("INSERT INTO dino_line VALUES (?, ?, ?, ?, ?, ?, ?)", [
+            ("1", "10", "a", "1", "A", "First", "R1"),
+            ("2", "20", "a", "1", "A", "Second", "R2"),
+        ])
+        transform(db, settings)
+        routes = RoutesTransformer()
+        routes.initialize(db, settings)
+        routes.transform(db, settings)
+        assert db.execute("SELECT route_id, agency_id FROM gtfs_routes ORDER BY route_id").fetchall() == [
+            ("R1", "2:A"), ("R2", "2:A"),
+        ]
 
 
 def test_agency_canonical_requires_version_and_operator_code():
@@ -249,8 +293,6 @@ def test_rejects_invalid_id_configuration(agency_ids):
     ("{operator.MISSING}", [("A", "Agency", "1")], InputError, "missing column"),
     ("{operator.OP_BRANCH_NR}", [("A", "Agency", "")], InputError, "OP_BRANCH_NR is required"),
     ("same", [("A", "First", "1"), ("B", "Second", "1")], CollisionError, "operator.din rows 1 and 2"),
-    ("{operator.OP_BRANCH_NR}", [("A", "Agency", "1"), ("A", "Agency", "2")],
-     CollisionError, "operator.din rows 1 and 2"),
 ])
 def test_rejects_missing_or_conflicting_template_values(template, rows, error, message):
     settings = {**SETTINGS, "ids": {"agency": {"mode": "template", "template": template}}}
@@ -260,3 +302,34 @@ def test_rejects_missing_or_conflicting_template_values(template, rows, error, m
         with pytest.raises(error, match=message):
             transform(db, settings)
         assert db.execute("SELECT * FROM gtfs_agency").fetchall() == []
+
+
+def test_merged_operator_uses_last_template_id_and_avoids_replaced_id_collisions():
+    settings = {**SETTINGS, "ids": {"agency": {"mode": "template", "template": "{operator.OP_BRANCH_NR}"}}}
+    with temporary_database() as db:
+        db.execute("CREATE TABLE dino_operator (VERSION TEXT, OP_CODE TEXT, OP_LONG_NAME TEXT, OP_BRANCH_NR TEXT)")
+        db.executemany("INSERT INTO dino_operator VALUES (?, ?, ?, ?)", [
+            ("1", "A", "Agency", "other"), ("2", "A", "Agency", "last"),
+            ("1", "B", "Other", "other"),
+        ])
+        transform(db, settings)
+        assert db.execute("SELECT agency_id, agency_name FROM gtfs_agency ORDER BY agency_id").fetchall() == [
+            ("last", "Agency"), ("other", "Other"),
+        ]
+        assert db.execute("SELECT * FROM map_operator_2_agency ORDER BY VERSION, OP_CODE").fetchall() == [
+            ("1", "A", "last"), ("1", "B", "other"), ("2", "A", "last"),
+        ]
+
+
+def test_merged_operator_rejects_collision_with_final_template_id():
+    settings = {**SETTINGS, "ids": {"agency": {"mode": "template", "template": "{operator.OP_BRANCH_NR}"}}}
+    with temporary_database() as db:
+        db.execute("CREATE TABLE dino_operator (VERSION TEXT, OP_CODE TEXT, OP_LONG_NAME TEXT, OP_BRANCH_NR TEXT)")
+        db.executemany("INSERT INTO dino_operator VALUES (?, ?, ?, ?)", [
+            ("1", "A", "Agency", "first"), ("1", "B", "Other", "shared"),
+            ("2", "A", "Agency", "shared"),
+        ])
+        with pytest.raises(CollisionError, match="shared.*operator.din rows 3 and 2"):
+            transform(db, settings)
+        assert db.execute("SELECT * FROM gtfs_agency").fetchall() == []
+        assert db.execute("SELECT * FROM map_operator_2_agency").fetchall() == []
