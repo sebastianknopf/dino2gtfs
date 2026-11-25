@@ -2,12 +2,17 @@ import pytest
 
 from dino2gtfs.domain.errors import ConfigurationError, InputError
 from dino2gtfs.infrastructure.sqlite import temporary_database
+from dino2gtfs.transformers.agency import AgencyTransformer
 from dino2gtfs.transformers.base_transformer import TransformerBase
+from dino2gtfs.transformers.stops import StopsTransformer
 
 
 class ExampleTransformer(TransformerBase):
     def __init__(self, components):
         self.components = components
+
+    def initialize(self, database, settings):
+        pass
 
     def transform(self, database, settings):
         pass
@@ -19,6 +24,21 @@ class ExampleTransformer(TransformerBase):
 def test_base_requires_transform_and_fingerprint_implementation():
     with pytest.raises(TypeError):
         TransformerBase()
+
+
+def test_initialize_creates_mapping_tables_without_relations_or_indexes():
+    with temporary_database() as db:
+        AgencyTransformer().initialize(db, {})
+        StopsTransformer().initialize(db, {})
+        for table, columns in (
+            ("map_operator_2_agency", ["VERSION", "OP_CODE", "gtfs_id"]),
+            ("map_stop_2_stops", ["VERSION", "STOP_ID", "gtfs_id"]),
+            ("map_stop_point_2_stops", ["VERSION", "STOP_ID", "STOP_AREA_ID", "STOPPING_POINT_NR", "gtfs_id"]),
+        ):
+            info = db.execute("SELECT * FROM pragma_table_info(?)", (table,)).fetchall()
+            assert [(row[1], row[2], row[5]) for row in info] == [(column, "TEXT", 0) for column in columns]
+            assert db.execute("SELECT * FROM pragma_index_list(?)", (table,)).fetchall() == []
+            assert db.execute("SELECT * FROM pragma_foreign_key_list(?)", (table,)).fetchall() == []
 
 
 def test_fingerprint_is_stable_and_components_are_unambiguous():

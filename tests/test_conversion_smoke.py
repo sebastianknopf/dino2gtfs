@@ -21,7 +21,7 @@ def test_end_to_end_exports_agency(tmp_path):
     with ZipFile(source, "w") as archive:
         archive.writestr("stop.din", "VERSION;STOP_NR;STOP_NAME;GLOBAL_ID;IS_RESPONSIBLE_STOP\n"
                                     "1;1;Test;S1;1\n1;2;External;;0\n")
-        archive.writestr("operator.din", "OP_CODE;OP_LONG_NAME\n1;Operator\n")
+        archive.writestr("operator.din", "VERSION;OP_CODE;OP_LONG_NAME\n1;1;Operator\n")
     assert main(["convert", "--profile", "dino212_default", "--config", str(config), "--input", str(source), "--output", str(destination)]) == 0
     with ZipFile(destination) as archive:
         assert b"agency:1,Operator,https://example.org,Europe/Berlin" in archive.read("agency.txt")
@@ -42,7 +42,7 @@ def test_default_conversion_retains_import_for_debugging(tmp_path):
     )
     with ZipFile(source, "w") as archive:
         archive.writestr("stop.din", "VERSION;STOP_NR;STOP_NAME;IS_RESPONSIBLE_STOP\n1;1;Test;1\n")
-        archive.writestr("operator.din", "OP_CODE;OP_LONG_NAME\n1;Operator\n")
+        archive.writestr("operator.din", "VERSION;OP_CODE;OP_LONG_NAME\n1;1;Operator\n")
     assert main(["convert", "--profile", "dino212_default", "--config", str(config),
                  "--input", str(source), "--output", str(destination), "--database", str(database)]) == 0
     with closing(sqlite3.connect(database)) as connection:
@@ -51,6 +51,9 @@ def test_default_conversion_retains_import_for_debugging(tmp_path):
             ("stop:7:station1:1", "Test")
         ]
         assert connection.execute("SELECT agency_id FROM gtfs_agency").fetchall() == [("operator-1",)]
+        assert connection.execute("SELECT * FROM map_operator_2_agency").fetchall() == [("1", "1", "operator-1")]
+        assert connection.execute("SELECT * FROM map_stop_2_stops").fetchall() == [("1", "1", "stop:7:station1:1")]
+        assert connection.execute("SELECT * FROM map_stop_point_2_stops").fetchall() == []
     assert destination.exists()
 
 

@@ -13,6 +13,12 @@ SETTINGS = {
 }
 
 
+def transform(db, settings, transformer=None):
+    transformer = transformer if transformer is not None else AgencyTransformer()
+    transformer.initialize(db, settings)
+    transformer.transform(db, settings)
+
+
 def test_transforms_operators_and_deduplicates_versions():
     with temporary_database() as db:
         db.execute(
@@ -25,7 +31,7 @@ def test_transforms_operators_and_deduplicates_versions():
             ("1", "02", "", "Long 2", "Short 2"),
             ("1", "03", "", "", "Short 3"),
         ])
-        AgencyTransformer().transform(db, SETTINGS)
+        transform(db, SETTINGS)
         assert db.execute(
             "SELECT agency_id, agency_name, agency_url, agency_timezone, agency_lang FROM gtfs_agency ORDER BY agency_id"
         ).fetchall() == [
@@ -33,19 +39,26 @@ def test_transforms_operators_and_deduplicates_versions():
             ("agency:02", "Long 2", "https://example.org", "Europe/Berlin", "de"),
             ("agency:03", "Short 3", "https://example.org", "Europe/Berlin", "de"),
         ]
+        assert db.execute(
+            "SELECT VERSION, OP_CODE, gtfs_id FROM map_operator_2_agency ORDER BY VERSION, OP_CODE"
+        ).fetchall() == [
+            ("1", "01", "agency:01"), ("1", "02", "agency:02"),
+            ("1", "03", "agency:03"), ("2", "01", "agency:01"),
+        ]
 
 
 def test_optional_source_columns_and_language():
     with temporary_database() as db:
         db.execute("CREATE TABLE dino_operator (op_code TEXT, op_long_name TEXT)")
         db.execute("INSERT INTO dino_operator VALUES ('A', 'Agency')")
-        AgencyTransformer().transform(db, {
+        transform(db, {
             "defaults": {"agency": {"agency_url": "https://example.org", "agency_timezone": "UTC"}},
             "ids": SETTINGS["ids"],
         })
         assert db.execute("SELECT agency_id, agency_name, agency_lang FROM gtfs_agency").fetchall() == [
             ("agency:A", "Agency", None)
         ]
+        assert db.execute("SELECT * FROM map_operator_2_agency").fetchall() == [(None, "A", "agency:A")]
 
 
 def test_defaults_override_source_and_add_gtfs_fields():
@@ -56,7 +69,7 @@ def test_defaults_override_source_and_add_gtfs_fields():
     with temporary_database() as db:
         db.execute("CREATE TABLE dino_operator (OP_CODE TEXT, OP_LONG_NAME TEXT)")
         db.executemany("INSERT INTO dino_operator VALUES (?, ?)", [("A", "Source"), ("A", "Changed"), ("B", "")])
-        AgencyTransformer().transform(db, settings)
+        transform(db, settings)
         assert db.execute(
             "SELECT agency_id, agency_name, agency_phone, agency_email, cemv_support FROM gtfs_agency ORDER BY agency_id"
         ).fetchall() == [
@@ -72,7 +85,7 @@ def test_default_name_allows_operator_without_name_column():
     with temporary_database() as db:
         db.execute("CREATE TABLE dino_operator (OP_CODE TEXT)")
         db.execute("INSERT INTO dino_operator VALUES ('A')")
-        AgencyTransformer().transform(db, settings)
+        transform(db, settings)
         assert db.execute("SELECT agency_name FROM gtfs_agency").fetchall() == [("Configured",)]
 
 
@@ -85,7 +98,7 @@ def test_default_name_allows_operator_without_name_column():
 ])
 def test_rejects_invalid_agency_configuration(settings):
     with temporary_database() as db, pytest.raises(ConfigurationError, match="defaults"):
-        AgencyTransformer().transform(db, settings)
+        transform(db, settings)
 
 
 @pytest.mark.parametrize("columns, rows, message", [
@@ -102,7 +115,7 @@ def test_rejects_missing_operator_data(columns, rows, message):
             if rows:
                 db.executemany("INSERT INTO dino_operator VALUES (?, ?)", rows)
         with pytest.raises(InputError, match=message):
-            AgencyTransformer().transform(db, SETTINGS)
+            transform(db, SETTINGS)
         assert db.execute("SELECT * FROM gtfs_agency").fetchall() == []
 
 
@@ -111,8 +124,9 @@ def test_conflicting_operator_names_fail_without_partial_inserts():
         db.execute("CREATE TABLE dino_operator (OP_CODE TEXT, OP_LONG_NAME TEXT)")
         db.executemany("INSERT INTO dino_operator VALUES (?, ?)", [("A", "First"), ("B", "Other"), ("A", "Second")])
         with pytest.raises(CollisionError, match="agency:A.*operator.din rows 1 and 3"):
-            AgencyTransformer().transform(db, SETTINGS)
+            transform(db, SETTINGS)
         assert db.execute("SELECT * FROM gtfs_agency").fetchall() == []
+        assert db.execute("SELECT * FROM map_operator_2_agency").fetchall() == []
 
 
 def test_existing_agency_id_is_a_collision():
@@ -121,7 +135,7 @@ def test_existing_agency_id_is_a_collision():
         db.execute("INSERT INTO dino_operator VALUES ('A', 'Agency')")
         db.execute("INSERT INTO gtfs_agency (agency_id, agency_name, agency_url, agency_timezone) VALUES ('agency:A', 'Old', 'x', 'UTC')")
         with pytest.raises(CollisionError, match="agency:A"):
-            AgencyTransformer().transform(db, SETTINGS)
+            transform(db, SETTINGS)
 
 
 def test_custom_agency_id_template_uses_operator_columns():
@@ -129,7 +143,7 @@ def test_custom_agency_id_template_uses_operator_columns():
     with temporary_database() as db:
         db.execute("CREATE TABLE dino_operator (OP_CODE TEXT, OP_LONG_NAME TEXT, OP_BRANCH_NR TEXT)")
         db.execute("INSERT INTO dino_operator VALUES ('A', 'Agency', '02')")
-        AgencyTransformer().transform(db, settings)
+        transform(db, settings)
         assert db.execute("SELECT agency_id FROM gtfs_agency").fetchall() == [("op-A-02",)]
 
 
@@ -140,7 +154,7 @@ def test_agency_id_template_supports_stable_fingerprint():
         db.executemany("INSERT INTO dino_operator VALUES (?, ?, ?)", [
             ("1", "A", "Agency"), ("2", "A", "Agency"), ("1", "B", "Other"),
         ])
-        AgencyTransformer().transform(db, settings)
+        transform(db, settings)
         ids = db.execute("SELECT agency_id FROM gtfs_agency ORDER BY agency_name").fetchall()
         assert ids[0] == ("agency:ead76f8e70b5dd3b1a07a92c25c425b2b27198728862103d65c31c621e52a6aa",)
         assert len(ids) == 2 and ids[0] != ids[1]
@@ -153,7 +167,7 @@ def test_agency_template_supports_generic_entity_and_canonical():
     with temporary_database() as db:
         db.execute("CREATE TABLE dino_operator (OP_CODE TEXT, OP_LONG_NAME TEXT)")
         db.execute("INSERT INTO dino_operator VALUES ('A:1', 'Agency')")
-        AgencyTransformer().transform(db, settings)
+        transform(db, settings)
         assert db.execute("SELECT agency_id FROM gtfs_agency").fetchall() == [("agency:3:A:1",)]
 
 
@@ -167,7 +181,7 @@ def test_fingerprint_collision_fails_without_partial_inserts():
         db.execute("CREATE TABLE dino_operator (OP_CODE TEXT, OP_LONG_NAME TEXT)")
         db.executemany("INSERT INTO dino_operator VALUES (?, ?)", [("A", "First"), ("B", "Second")])
         with pytest.raises(CollisionError, match="operator.din rows 1 and 2"):
-            CollidingAgencyTransformer().transform(db, settings)
+            transform(db, settings, CollidingAgencyTransformer())
         assert db.execute("SELECT * FROM gtfs_agency").fetchall() == []
 
 
@@ -181,7 +195,7 @@ def test_fingerprint_collision_fails_without_partial_inserts():
 def test_rejects_invalid_id_configuration(agency_ids):
     settings = {**SETTINGS, "ids": {"agency": agency_ids}}
     with temporary_database() as db, pytest.raises(ConfigurationError, match="ids.agency"):
-        AgencyTransformer().transform(db, settings)
+        transform(db, settings)
 
 
 @pytest.mark.parametrize("template, rows, error, message", [
@@ -197,5 +211,5 @@ def test_rejects_missing_or_conflicting_template_values(template, rows, error, m
         db.execute("CREATE TABLE dino_operator (OP_CODE TEXT, OP_LONG_NAME TEXT, OP_BRANCH_NR TEXT)")
         db.executemany("INSERT INTO dino_operator VALUES (?, ?, ?)", rows)
         with pytest.raises(error, match=message):
-            AgencyTransformer().transform(db, settings)
+            transform(db, settings)
         assert db.execute("SELECT * FROM gtfs_agency").fetchall() == []
