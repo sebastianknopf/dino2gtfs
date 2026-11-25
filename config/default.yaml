@@ -31,16 +31,16 @@ mapping:
 ids:
   agency:
     mode: template
-    template: "{gtfs.canonical}"
+    template: "agency:{gtfs.canonical}"
   levels:
     mode: template
     template: "level:{stop_area.VERSION}:{stop_area.STOP_NR}:{stop_area.STOP_AREA_LEVEL}"
   stops:
     mode: global
-    template: "{gtfs.canonical}"
+    template: "stop:{gtfs.canonical}"
   routes:
     mode: global
-    template: "{gtfs.canonical}"
+    template: "route:{gtfs.canonical}"
   calendar:
     mode: template
     template: "service:{gtfs.service_fingerprint}"
