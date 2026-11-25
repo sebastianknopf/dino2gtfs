@@ -28,67 +28,60 @@ def create_table(db, name, columns, rows):
 
 
 @pytest.mark.parametrize("settings", [GLOBAL, TEMPLATE])
-def test_only_responsible_stations_and_their_points_are_transformed(settings, caplog):
+def test_all_stations_and_points_are_transformed_and_mapped(settings):
     with temporary_database() as db:
         create_table(db, "stop", ["VERSION", "STOP_NR", "STOP_NAME", "IS_RESPONSIBLE_STOP",
                                   "GLOBAL_ID", "STOP_POS_X", "STOP_POS_Y"], [
-            ("1", "1", "Excluded version", "0", "", "bad", "bad"),
-            ("2", "1", "Selected", "1", "S", "13", "52"),
-            ("3", "1", "Later", "1", "S2", "14", "53"),
-            ("1", "2", "External", "0", "S", "bad", "bad"),
-            ("1", "3", "Blank", "", "", "bad", "bad"),
-            ("1", "4", "Null", None, "", "bad", "bad"),
-        ])
-        create_table(db, "stop_area", ["VERSION", "STOP_NR", "STOP_AREA_NR", "STOP_AREA_POS_X", "STOP_AREA_POS_Y"], [
-            ("1", "1", "1", "13.1", "52.1"),
-            ("1", "2", "1", "", ""), ("1", "2", "1", "", ""),
+            ("1", "1", "External version", "0", "S", "12", "51"),
+            ("2", "1", "Responsible", "1", "S", "13", "52"),
+            ("3", "1", "Later external", "0", "S", "14", "53"),
+            ("1", "2", "External", "0", "T", "15", "54"),
+            ("2", "2", "Later external", "", "T", "16", "55"),
         ])
         create_table(db, "stop_point", ["VERSION", "STOP_NR", "STOP_AREA_NR", "STOPPING_POINT_NR", "GLOBAL_ID",
-                                       "STOPPING_POINT_POS_X", "STOPPING_POINT_POS_Y"], [
-            ("1", "1", "1", "1", "P", "", ""),
-            ("1", "2", "1", "1", "S", "bad", "bad"),
-            ("1", "9", "1", "1", "", "bad", "bad"),
+                                       "STOPPING_POINT_SHORTNAME"], [
+            ("1", "1", "1", "1", "P", "first"),
+            ("3", "1", "2", "2", "P", "last"),
+            ("1", "2", "1", "1", "Q", "external"),
         ])
-        with caplog.at_level(logging.WARNING):
-            transform(db, settings)
-        station = db.execute("SELECT stop_id, stop_name FROM gtfs_stops WHERE location_type = 1").fetchone()
-        point = db.execute(
-            "SELECT stop_name, stop_lat, stop_lon, parent_station FROM gtfs_stops WHERE location_type = 0"
-        ).fetchone()
-        assert station[1] == "Selected"
-        assert point == ("Selected", 52.1, 13.1, station[0])
-        assert db.execute("SELECT count(*) FROM gtfs_stops").fetchone() == ((3,) if settings is GLOBAL else (2,))
-        assert db.execute("SELECT * FROM map_stop_2_stops ORDER BY VERSION").fetchall() == [
-            ("2", "1", station[0]), ("3", "1", "S2" if settings is GLOBAL else station[0]),
+        transform(db, settings)
+        station_ids = dict(db.execute("SELECT stop_name, stop_id FROM gtfs_stops WHERE location_type = 1"))
+        point_ids = dict(db.execute("SELECT stop_code, stop_id FROM gtfs_stops WHERE location_type = 0"))
+        assert set(station_ids) == {"Responsible", "Later external"}
+        assert set(point_ids) == {"last", "external"}
+        assert db.execute("SELECT stop_name, parent_station FROM gtfs_stops WHERE stop_id = ?",
+                          (point_ids["last"],)).fetchone() == ("Responsible", station_ids["Responsible"])
+        assert db.execute("SELECT * FROM map_stop_2_stops ORDER BY STOP_ID, VERSION").fetchall() == [
+            ("1", "1", station_ids["Responsible"]), ("2", "1", station_ids["Responsible"]),
+            ("3", "1", station_ids["Responsible"]), ("1", "2", station_ids["Later external"]),
+            ("2", "2", station_ids["Later external"]),
         ]
-        assert db.execute(
-            "SELECT m.VERSION, m.STOP_ID, m.STOP_AREA_ID, m.STOPPING_POINT_NR, s.location_type "
-            "FROM map_stop_point_2_stops m JOIN gtfs_stops s ON m.gtfs_id = s.stop_id"
-        ).fetchall() == [("1", "1", "1", "1", 0)]
-        assert not caplog.records
+        assert db.execute("SELECT * FROM map_stop_point_2_stops ORDER BY STOP_ID, VERSION").fetchall() == [
+            ("1", "1", "1", "1", point_ids["last"]), ("3", "1", "2", "2", point_ids["last"]),
+            ("1", "2", "1", "1", point_ids["external"]),
+        ]
 
 
-def test_responsibility_column_is_required():
+def test_responsibility_column_is_optional():
     with temporary_database() as db:
-        db.execute("CREATE TABLE dino_stop (VERSION TEXT, STOP_NR TEXT)")
-        with pytest.raises(InputError, match="IS_RESPONSIBLE_STOP"):
-            transform(db, GLOBAL)
+        db.execute("CREATE TABLE dino_stop (VERSION TEXT, STOP_NR TEXT, STOP_NAME TEXT, GLOBAL_ID TEXT)")
+        db.execute("INSERT INTO dino_stop VALUES ('1', '1', 'Name', 'S')")
+        transform(db, GLOBAL)
+        assert db.execute("SELECT stop_id, stop_name FROM gtfs_stops").fetchall() == [("S", "Name")]
 
 
-def test_no_responsible_stations_produces_no_stops(caplog):
+def test_no_responsible_stations_uses_last_record():
     with temporary_database() as db:
-        create_table(db, "stop", ["VERSION", "STOP_NR", "IS_RESPONSIBLE_STOP"], [
-            ("1", "1", "0"), ("2", "1", ""),
+        create_table(db, "stop", ["VERSION", "STOP_NR", "STOP_NAME", "GLOBAL_ID", "IS_RESPONSIBLE_STOP"], [
+            ("1", "1", "First", "S", "0"), ("2", "1", "Last", "S", ""),
         ])
-        create_table(db, "stop_point", ["VERSION", "STOP_NR", "STOP_AREA_NR", "STOPPING_POINT_NR"], [
-            ("1", "1", "1", "1"),
+        create_table(db, "stop_point", ["VERSION", "STOP_NR", "STOP_AREA_NR", "STOPPING_POINT_NR", "GLOBAL_ID"], [
+            ("1", "1", "1", "1", "P"),
         ])
-        with caplog.at_level(logging.WARNING):
-            transform(db, GLOBAL)
-        assert db.execute("SELECT * FROM gtfs_stops").fetchall() == []
-        assert db.execute("SELECT * FROM map_stop_2_stops").fetchall() == []
-        assert db.execute("SELECT * FROM map_stop_point_2_stops").fetchall() == []
-        assert not caplog.records
+        transform(db, GLOBAL)
+        assert db.execute("SELECT stop_id, stop_name FROM gtfs_stops ORDER BY stop_id").fetchall() == [
+            ("P", "Last"), ("S", "Last"),
+        ]
 
 
 def test_global_stations_platforms_and_coordinate_fallback(caplog):
@@ -162,7 +155,7 @@ def test_template_mode_supports_generic_fingerprint_and_source_field():
         assert platform[1] == station[0]
 
 
-def test_deduplicates_by_non_version_keys_and_keeps_first(caplog):
+def test_template_mode_merges_by_stop_number_and_maps_every_source(caplog):
     settings = TEMPLATE
     with temporary_database() as db:
         create_table(db, "stop", ["VERSION", "STOP_NR", "STOP_NAME", "GLOBAL_ID", "STOP_POS_X", "STOP_POS_Y"], [
@@ -183,18 +176,18 @@ def test_deduplicates_by_non_version_keys_and_keeps_first(caplog):
             "SELECT stop_id, stop_code, stop_lat, stop_lon, parent_station FROM gtfs_stops "
             "WHERE location_type = 0 ORDER BY stop_code"
         ).fetchall()
-        assert station[1] == "First"
+        assert station[1] == "Duplicate"
         assert [(point[1], point[2], point[3], point[4]) for point in points] == [
-            ("Different area", 52, 13, station[0]), ("First point", 52, 13, station[0]),
+            ("Different area", 54, 15, station[0]),
         ]
         assert db.execute("SELECT * FROM map_stop_2_stops ORDER BY VERSION").fetchall() == [
-            ("1", "10", station[0]), ("2", "10", station[0]),
+            ("1", "10", station[0]), ("1", "10", station[0]), ("2", "10", station[0]),
         ]
         assert db.execute(
             "SELECT * FROM map_stop_point_2_stops ORDER BY VERSION, STOP_AREA_ID"
         ).fetchall() == [
-            ("1", "10", "1", "1", points[1][0]), ("1", "10", "2", "1", points[0][0]),
-            ("2", "10", "1", "1", points[1][0]),
+            ("1", "10", "1", "1", points[0][0]), ("1", "10", "2", "1", points[0][0]),
+            ("2", "10", "1", "1", points[0][0]),
         ]
         assert not caplog.records
 
@@ -202,14 +195,14 @@ def test_deduplicates_by_non_version_keys_and_keeps_first(caplog):
 @pytest.mark.parametrize("settings", [GLOBAL, TEMPLATE])
 @pytest.mark.parametrize("zero_first", [True, False])
 @pytest.mark.parametrize("other_version", ["1", "2"])
-def test_prefers_nonzero_area_for_same_stop_point_without_warning(caplog, settings, zero_first, other_version):
+def test_point_merging_uses_identity_not_area_or_point_number(caplog, settings, zero_first, other_version):
     with temporary_database() as db:
         create_table(db, "stop", ["VERSION", "STOP_NR", "STOP_NAME", "GLOBAL_ID", "STOP_POS_X", "STOP_POS_Y"], [
             ("1", "10", "First", "S", "13", "52"),
             ("1", "20", "Second", "T", "13", "52"),
         ])
-        zero = ("1", "10", "0", "1", "P", "discarded", "bad", "bad")
-        nonzero = (other_version, "10", "1", "1", "P", "preferred", "", "")
+        zero = ("1", "10", "0", "1", "P", "zero", "", "")
+        nonzero = (other_version, "10", "1", "1", "P", "nonzero", "", "")
         rows = [zero, nonzero] if zero_first else [nonzero, zero]
         rows.extend([
             ("1", "10", "2", "1", "Q", "other area", "", ""),
@@ -220,17 +213,23 @@ def test_prefers_nonzero_area_for_same_stop_point_without_warning(caplog, settin
                                        "STOPPING_POINT_SHORTNAME", "STOPPING_POINT_POS_X", "STOPPING_POINT_POS_Y"], rows)
         with caplog.at_level(logging.WARNING):
             transform(db, settings)
+        expected = (
+            [("nonzero" if zero_first else "zero", 52, 13), ("other area", 52, 13),
+             ("other station", 52, 13), ("zero only", 52, 13)]
+            if settings is GLOBAL else [("other station", 52, 13), ("zero only", 52, 13)]
+        )
         assert db.execute(
             "SELECT stop_code, stop_lat, stop_lon FROM gtfs_stops WHERE location_type = 0 ORDER BY stop_code"
-        ).fetchall() == [
-            ("other area", 52, 13), ("other station", 52, 13), ("preferred", 52, 13), ("zero only", 52, 13),
-        ]
-        preferred_id = db.execute("SELECT stop_id FROM gtfs_stops WHERE stop_code = 'preferred'").fetchone()[0]
+        ).fetchall() == sorted(expected)
+        merged_id = db.execute(
+            "SELECT gtfs_id FROM map_stop_point_2_stops WHERE STOP_ID = '10' AND STOP_AREA_ID = '0' "
+            "AND STOPPING_POINT_NR = '1'"
+        ).fetchone()[0]
         assert db.execute(
             "SELECT * FROM map_stop_point_2_stops WHERE STOP_ID = '10' AND STOPPING_POINT_NR = '1' "
             "AND STOP_AREA_ID IN ('0', '1') ORDER BY STOP_AREA_ID"
         ).fetchall() == [
-            ("1", "10", "0", "1", preferred_id), (other_version, "10", "1", "1", preferred_id),
+            ("1", "10", "0", "1", merged_id), (other_version, "10", "1", "1", merged_id),
         ]
         assert not caplog.records
 
@@ -238,7 +237,7 @@ def test_prefers_nonzero_area_for_same_stop_point_without_warning(caplog, settin
 @pytest.mark.parametrize("settings", [GLOBAL, TEMPLATE])
 @pytest.mark.parametrize("zero_first", [True, False])
 @pytest.mark.parametrize("other_version", ["1", "2"])
-def test_prefers_nonzero_area_for_same_global_id_and_station(caplog, settings, zero_first, other_version):
+def test_last_point_wins_when_parent_responsibility_is_equal(caplog, settings, zero_first, other_version):
     with temporary_database() as db:
         create_table(db, "stop", ["VERSION", "STOP_NR", "STOP_NAME", "GLOBAL_ID", "STOP_POS_X", "STOP_POS_Y"], [
             ("1", "10", "Station", "S", "13", "52"),
@@ -250,12 +249,31 @@ def test_prefers_nonzero_area_for_same_global_id_and_station(caplog, settings, z
                                        "GLOBAL_ID", "STOPPING_POINT_SHORTNAME"], rows)
         with caplog.at_level(logging.WARNING):
             transform(db, settings)
-        assert db.execute("SELECT stop_code FROM gtfs_stops WHERE location_type = 0").fetchall() == [("preferred",)]
+        expected = "preferred" if zero_first else "discarded"
+        assert db.execute("SELECT stop_code FROM gtfs_stops WHERE location_type = 0").fetchall() == [(expected,)]
         preferred_id = db.execute("SELECT stop_id FROM gtfs_stops WHERE location_type = 0").fetchone()[0]
         assert db.execute("SELECT * FROM map_stop_point_2_stops ORDER BY STOP_AREA_ID").fetchall() == [
             ("1", "10", "0", "1", preferred_id), (other_version, "10", "2", "3", preferred_id),
         ]
         assert not caplog.records
+
+
+@pytest.mark.parametrize("responsible_first", [True, False])
+def test_global_point_prefers_responsible_parent_over_later_external(responsible_first):
+    with temporary_database() as db:
+        create_table(db, "stop", ["VERSION", "STOP_NR", "STOP_NAME", "GLOBAL_ID", "IS_RESPONSIBLE_STOP"], [
+            ("1", "1", "Responsible", "S", "1"), ("1", "2", "External", "T", "0"),
+        ])
+        responsible = ("1", "1", "1", "1", "P", "preferred")
+        external = ("1", "2", "1", "1", "P", "external")
+        rows = [responsible, external] if responsible_first else [external, responsible]
+        create_table(db, "stop_point", ["VERSION", "STOP_NR", "STOP_AREA_NR", "STOPPING_POINT_NR",
+                                       "GLOBAL_ID", "STOPPING_POINT_SHORTNAME"], rows)
+        transform(db, GLOBAL)
+        assert db.execute("SELECT stop_code, parent_station FROM gtfs_stops WHERE stop_id = 'P'").fetchone() == (
+            "preferred", "S",
+        )
+        assert db.execute("SELECT gtfs_id FROM map_stop_point_2_stops").fetchall() == [("P",), ("P",)]
 
 
 @pytest.mark.parametrize("settings", [GLOBAL, TEMPLATE])
@@ -327,7 +345,7 @@ def test_global_mode_deduplicates_same_global_id_across_versions(second_version)
         transform(db, GLOBAL)
         assert db.execute(
             "SELECT stop_id, stop_name, parent_station FROM gtfs_stops ORDER BY stop_id"
-        ).fetchall() == [("P", "First", "S"), ("Q", "First", "S"), ("S", "First", None)]
+        ).fetchall() == [("P", "Second", "S"), ("Q", "Second", "S"), ("S", "Second", None)]
         assert db.execute("SELECT * FROM map_stop_2_stops ORDER BY VERSION").fetchall() == [
             ("1", "1", "S"), (second_version, "2", "S"),
         ]
@@ -401,7 +419,7 @@ def test_global_identity_rejects_ambiguous_source_mapping(target):
 
 
 @pytest.mark.parametrize("settings", [GLOBAL, TEMPLATE])
-def test_collision_detection_ignores_unselected_station_versions(settings, caplog):
+def test_collision_detection_checks_all_station_versions(settings, caplog):
     with temporary_database() as db:
         create_table(db, "stop", ["VERSION", "STOP_NR", "STOP_NAME", "GLOBAL_ID"], [
             ("1", "1", "First", "G"),
@@ -410,12 +428,17 @@ def test_collision_detection_ignores_unselected_station_versions(settings, caplo
         ])
         with caplog.at_level(logging.WARNING):
             transform(db, settings)
-        assert not any("global ID collision" in r.message for r in caplog.records)
+        warnings = [r.message for r in caplog.records if "global ID collision" in r.message]
+        if settings is GLOBAL:
+            assert not warnings
+        else:
+            assert len(warnings) == 1
+            assert "stop.din row 1" in warnings[0] and "stop.din row 3" in warnings[0]
         assert db.execute("SELECT count(*) FROM gtfs_stops").fetchone() == ((1,) if settings is GLOBAL else (2,))
 
 
 @pytest.mark.parametrize("settings", [GLOBAL, TEMPLATE])
-def test_point_collision_detection_checks_versions_of_skipped_duplicates(settings, caplog):
+def test_point_collision_detection_ignores_duplicates_in_same_merged_group(settings, caplog):
     with temporary_database() as db:
         create_table(db, "stop", ["VERSION", "STOP_NR", "STOP_NAME", "GLOBAL_ID"], [
             ("1", "1", "Town", "S"),
@@ -429,14 +452,12 @@ def test_point_collision_detection_checks_versions_of_skipped_duplicates(setting
         else:
             with caplog.at_level(logging.WARNING):
                 transform(db, settings)
-            messages = [r.message for r in caplog.records if "global ID collision" in r.message]
-            assert len(messages) == 1
-            assert "P" in messages[0] and "stop_point.din row 2" in messages[0] and "stop_point.din row 3" in messages[0]
-            assert "VERSION" not in messages[0]
+            assert not any("global ID collision" in r.message for r in caplog.records)
+            assert db.execute("SELECT count(*) FROM gtfs_stops WHERE location_type = 0").fetchone() == (1,)
 
 
 @pytest.mark.parametrize("settings", [GLOBAL, TEMPLATE])
-def test_point_collision_checks_only_selected_responsible_station_version(settings, caplog):
+def test_point_collision_checks_merged_group_not_selected_station_version(settings, caplog):
     with temporary_database() as db:
         create_table(db, "stop", ["VERSION", "STOP_NR", "STOP_NAME", "IS_RESPONSIBLE_STOP", "GLOBAL_ID"], [
             ("1", "1", "External", "0", "S"), ("2", "1", "Selected", "1", "S"),
@@ -450,11 +471,11 @@ def test_point_collision_checks_only_selected_responsible_station_version(settin
         with caplog.at_level(logging.WARNING):
             transform(db, settings)
         assert not any("global ID collision" in r.message for r in caplog.records)
-        assert db.execute("SELECT count(*) FROM gtfs_stops").fetchone() == ((3,) if settings is GLOBAL else (4,))
+        assert db.execute("SELECT count(*) FROM gtfs_stops").fetchone() == ((3,) if settings is GLOBAL else (2,))
 
 
 @pytest.mark.parametrize("settings", [GLOBAL, TEMPLATE])
-def test_point_collision_uses_source_station_version_after_global_alias(settings, caplog):
+def test_collision_detection_respects_mode_after_global_alias(settings, caplog):
     with temporary_database() as db:
         create_table(db, "stop", ["VERSION", "STOP_NR", "STOP_NAME", "GLOBAL_ID"], [
             ("1", "1", "First", "S"), ("2", "2", "Second", "S"),
@@ -470,7 +491,9 @@ def test_point_collision_uses_source_station_version_after_global_alias(settings
                 transform(db, settings)
             warnings = [r.message for r in caplog.records if "global ID collision" in r.message]
             assert len(warnings) == 1
-            assert "P" in warnings[0] and "stop_point.din row 1" in warnings[0] and "stop_point.din row 2" in warnings[0]
+            assert "'S'" in warnings[0] and "stop.din row 1" in warnings[0] and "stop.din row 2" in warnings[0]
+            mapped_ids = db.execute("SELECT gtfs_id FROM map_stop_point_2_stops").fetchall()
+            assert len(mapped_ids) == 2 and mapped_ids[0] == mapped_ids[1]
 
 
 def test_global_mode_rejects_cross_version_global_id_reused_between_stop_kinds():
@@ -498,21 +521,21 @@ def test_template_mode_warns_for_global_id_collisions(caplog):
         create_table(db, "stop_point", ["VERSION", "STOP_NR", "STOP_AREA_NR", "STOPPING_POINT_NR", "GLOBAL_ID"], [
             ("1", "1", "1", "1", "platform"),
             ("2", "1", "1", "1", "platform"),
-            ("1", "1", "1", "2", "platform"),
+            ("1", "2", "1", "2", "platform"),
             ("1", "1", "1", "3", "station"),
             ("1", "1", "1", "4", ""),
         ])
         with caplog.at_level(logging.WARNING):
             transform(db, TEMPLATE)
         warnings = [record.message for record in caplog.records if "global ID collision" in record.message]
-        assert len(warnings) == 3
+        assert len(warnings) == 4
         assert any("'station'" in message and "stop.din row 1" in message and "stop.din row 3" in message for message in warnings)
         assert any("'platform'" in message and "stop_point.din row 1" in message and "stop_point.din row 3" in message for message in warnings)
         assert any("'station'" in message and "stop.din row 1" in message and "stop_point.din row 4" in message for message in warnings)
-        assert db.execute("SELECT count(*) FROM gtfs_stops").fetchone() == (8,)
+        assert db.execute("SELECT count(*) FROM gtfs_stops").fetchone() == (6,)
 
 
-def test_template_mode_does_not_warn_for_cross_version_global_id_reuse(caplog):
+def test_template_mode_warns_for_global_id_reuse_across_point_groups(caplog):
     with temporary_database() as db:
         create_table(db, "stop", ["VERSION", "STOP_NR", "STOP_NAME", "GLOBAL_ID"], [
             ("1", "1", "Town", "station-1"), ("2", "2", "Town", "station-2"),
@@ -523,10 +546,11 @@ def test_template_mode_does_not_warn_for_cross_version_global_id_reuse(caplog):
         with caplog.at_level(logging.WARNING):
             transform(db, TEMPLATE)
         warnings = [record.message for record in caplog.records if "global ID collision" in record.message]
-        assert not warnings
+        assert len(warnings) == 1
+        assert "'platform'" in warnings[0] and "stop_point.din row 1" in warnings[0] and "stop_point.din row 2" in warnings[0]
 
 
-def test_template_mode_does_not_warn_for_cross_version_cross_kind_reuse(caplog):
+def test_template_mode_warns_for_cross_version_cross_kind_reuse(caplog):
     with temporary_database() as db:
         create_table(db, "stop", ["VERSION", "STOP_NR", "STOP_NAME", "GLOBAL_ID"], [
             ("1", "1", "Town", "same"),
@@ -536,20 +560,24 @@ def test_template_mode_does_not_warn_for_cross_version_cross_kind_reuse(caplog):
         ])
         with caplog.at_level(logging.WARNING):
             transform(db, TEMPLATE)
-        assert not any("global ID collision" in r.message for r in caplog.records)
+        warnings = [r.message for r in caplog.records if "global ID collision" in r.message]
+        assert len(warnings) == 1
+        assert "stop.din row 1" in warnings[0] and "stop_point.din row 1" in warnings[0]
         assert db.execute("SELECT count(*) FROM gtfs_stops").fetchone() == (2,)
 
 
 @pytest.mark.parametrize("target,global_column", [
     ("station", False), ("station", True), ("platform", False), ("platform", True),
 ])
-def test_global_mode_rejects_missing_global_id_without_partial_output(target, global_column):
+@pytest.mark.parametrize("responsible", ["0", "1"])
+def test_global_mode_rejects_missing_global_id_without_partial_output(target, global_column, responsible):
     with temporary_database() as db:
-        stop_cols = ["VERSION", "STOP_NR", "STOP_NAME"]
+        stop_cols = ["VERSION", "STOP_NR", "STOP_NAME", "IS_RESPONSIBLE_STOP"]
         if target != "station" or global_column:
             stop_cols.append("GLOBAL_ID")
-        stop_values = ["1", "1", "Name"] + ([""] if target == "station" and global_column else
-                                              ["S"] if target != "station" else [])
+        stop_values = ["1", "1", "Name", responsible] + (
+            [""] if target == "station" and global_column else ["S"] if target != "station" else []
+        )
         create_table(db, "stop", stop_cols, [stop_values])
         if target == "platform":
             cols = ["VERSION", "STOP_NR", "STOP_AREA_NR", "STOPPING_POINT_NR"]
@@ -641,7 +669,7 @@ def test_same_global_id_merges_stations_with_different_source_numbers():
             ("1", "1", "First", "S"), ("1", "2", "Second", "S"),
         ])
         transform(db, GLOBAL)
-        assert db.execute("SELECT stop_id, stop_name FROM gtfs_stops").fetchall() == [("S", "First")]
+        assert db.execute("SELECT stop_id, stop_name FROM gtfs_stops").fetchall() == [("S", "Second")]
         assert db.execute("SELECT * FROM map_stop_2_stops ORDER BY STOP_ID").fetchall() == [
             ("1", "1", "S"), ("1", "2", "S"),
         ]
@@ -765,7 +793,7 @@ def test_stop_overrides_clear_optional_fields_without_reapplying_defaults():
 
 
 @pytest.mark.parametrize("source_name", [None, "", "   "])
-def test_missing_stop_name_warns_and_is_inherited_by_platform(caplog, source_name):
+def test_missing_stop_name_fails_without_default_or_override(source_name):
     with temporary_database() as db:
         columns = ["VERSION", "STOP_NR", "GLOBAL_ID", "STOP_POS_X", "STOP_POS_Y"]
         row = ["1", "1", "S", "13", "52"]
@@ -775,19 +803,20 @@ def test_missing_stop_name_warns_and_is_inherited_by_platform(caplog, source_nam
         create_table(db, "stop", columns, [row])
         create_table(db, "stop_point", ["VERSION", "STOP_NR", "STOP_AREA_NR", "STOPPING_POINT_NR", "GLOBAL_ID"],
                      [("1", "1", "1", "1", "P")])
-        with caplog.at_level(logging.WARNING):
+        with pytest.raises(InputError, match=r"stop.din row 1: STOP_NAME is required"):
             transform(db, GLOBAL)
-        assert db.execute("SELECT stop_id, stop_name, parent_station FROM gtfs_stops ORDER BY location_type DESC").fetchall() == [
-            ("S", None, None), ("P", None, "S"),
-        ]
-        assert any("stop.din row 1" in record.message and "STOP_NAME" in record.message for record in caplog.records)
+        assert db.execute("SELECT * FROM gtfs_stops").fetchall() == []
 
 
 @pytest.mark.parametrize("section", ["defaults", "overrides"])
 def test_configured_stop_name_avoids_missing_name_warning(caplog, section):
     with temporary_database() as db:
         create_table(db, "stop", ["VERSION", "STOP_NR", "GLOBAL_ID"], [("1", "1", "S")])
+        create_table(db, "stop_point", ["VERSION", "STOP_NR", "STOP_AREA_NR", "STOPPING_POINT_NR", "GLOBAL_ID"],
+                     [("1", "1", "1", "1", "P")])
         with caplog.at_level(logging.WARNING):
             transform(db, {**GLOBAL, section: {"stops": {"stop_name": "Default"}}})
-        assert db.execute("SELECT stop_name FROM gtfs_stops").fetchone() == ("Default",)
+        assert db.execute("SELECT stop_id, stop_name FROM gtfs_stops ORDER BY stop_id").fetchall() == [
+            ("P", "Default"), ("S", "Default"),
+        ]
         assert not any("STOP_NAME" in record.message for record in caplog.records)

@@ -23,7 +23,7 @@ def test_end_to_end_exports_agency(tmp_path):
     config = global_config(tmp_path)
     with ZipFile(source, "w") as archive:
         archive.writestr("stop.din", "VERSION;STOP_NR;STOP_NAME;GLOBAL_ID;IS_RESPONSIBLE_STOP\n"
-                                    "1;1;Test;S1;1\n1;2;External;;0\n")
+                                    "1;1;Test;S1;1\n1;2;External;S2;0\n")
         archive.writestr("operator.din", "VERSION;OP_CODE;OP_LONG_NAME\n1;1;Operator\n")
         archive.writestr("line.din", "VERSION;LINE_NR;STR_LINE_VAR;LINE_DIR_NR;OP_CODE;LINE_NAME;MOT_NR;GLOBAL_ID\n"
                                     "1;42;a;1;1;42;10;R\n")
@@ -32,8 +32,9 @@ def test_end_to_end_exports_agency(tmp_path):
     with ZipFile(destination) as archive:
         assert b"agency:1,Operator,https://example.org,Europe/Berlin" in archive.read("agency.txt")
         stops = archive.read("stops.txt").splitlines()
-        assert len(stops) == 2
+        assert len(stops) == 3
         assert stops[1].startswith(b"S1,")
+        assert stops[2].startswith(b"S2,")
         assert b"R,agency:1,42,,,0," in archive.read("routes.txt")
 
 def test_default_conversion_retains_import_for_debugging(tmp_path):
