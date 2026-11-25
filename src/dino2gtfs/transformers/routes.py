@@ -56,7 +56,7 @@ def _mode_mapping(settings: Mapping[str, Any]) -> dict[str, int]:
 
 
 class RoutesTransformer(TransformerBase):
-    """Consolidate lines by global ID or by LINE_NAME and resolved GTFS mode."""
+    """Consolidate lines by global ID or by branch and line number."""
 
     def initialize(self, database: sqlite3.Connection, settings: Mapping[str, Any]) -> None:
         database.execute(
@@ -69,7 +69,7 @@ class RoutesTransformer(TransformerBase):
     ) -> tuple[str, ...]:
         name = _optional(sources["line"], "LINE_NAME")
         if name is None:
-            raise InputError(f"LINE_NAME missing in {context}")
+            name = _required(sources["gtfs"], "route_short_name", context)
 
         return (
             name,
@@ -108,7 +108,7 @@ class RoutesTransformer(TransformerBase):
         
         template = self.make_id_template(settings, "routes", {"line": "line.din"}) if mode == "template" else None
 
-        columns = _columns(database, "line", (*LINE_KEY, "LINE_NAME"))
+        columns = _columns(database, "line", (*LINE_KEY, "BRANCH_NR") if mode == "template" else LINE_KEY)
         if template is not None:
             self.validate_template_fields(template, {"line": columns | {"OP_CODE"}}, ("route_type",))
 
@@ -141,7 +141,7 @@ class RoutesTransformer(TransformerBase):
         existing_ids = {row[0] for row in database.execute("SELECT route_id FROM gtfs_routes")}
         routes: dict[SourceKey, tuple[str, Row, str, str | None, str]] = {}
         identifiers: dict[str, str] = {}
-        global_ids: dict[str, str] = {}
+        global_ids: dict[str, tuple[SourceKey, str]] = {}
         mappings: dict[SourceKey, tuple[SourceKey, str]] = {}
 
         for rowid, row in _rows(database, "line"):
@@ -179,7 +179,12 @@ class RoutesTransformer(TransformerBase):
             virtual = {"route_type": str(route_type)}
             name = _optional(row, "LINE_NAME")
             if name is None:
-                raise InputError(f"LINE_NAME missing in {context}")
+                default_name = defaults.get("route_short_name")
+                if not isinstance(default_name, str) or not default_name.strip():
+                    raise InputError(
+                        f"{context}: LINE_NAME is required; configure defaults.routes.route_short_name"
+                    )
+                virtual["route_short_name"] = default_name
 
             global_id = _optional(row, "GLOBAL_ID")
             if mode == "global":
@@ -187,7 +192,17 @@ class RoutesTransformer(TransformerBase):
                 identity = (global_id,)
                 identifier = global_id
             else:
-                identity = self.fingerprint_components({"line": row, "gtfs": virtual}, context)
+                identity = _source_key(row, ("BRANCH_NR", "LINE_NR"), context)
+                if global_id is None:
+                    LOGGER.warning("%s: GLOBAL_ID is missing", context)
+                else:
+                    previous_global = global_ids.get(global_id)
+                    if previous_global is not None and previous_global[0] != identity:
+                        LOGGER.warning(
+                            "global ID collision in gtfs_routes: %r (%s and %s)",
+                            global_id, previous_global[1], context,
+                        )
+                    global_ids.setdefault(global_id, (identity, context))
                 assert template is not None
                 identifier = self.render_id(
                     template, {"line": row}, context, virtual, optional_fields=(("line", "OP_CODE"),)
@@ -217,13 +232,6 @@ class RoutesTransformer(TransformerBase):
         for identifier, values, context, global_id, _ in routes.values():
             if identifier in existing_ids:
                 raise CollisionError(f"identity collision in gtfs_routes: {identifier!r} (existing route and {context})")
-
-            if mode == "template" and global_id is not None:
-                if global_id in global_ids:
-                    message = f"global ID collision in gtfs_routes: {global_id!r} ({global_ids[global_id]} and {context})"
-                    LOGGER.warning("%s", message)
-                else:
-                    global_ids[global_id] = context
 
             if identifier in identifiers:
                 raise CollisionError(

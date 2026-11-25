@@ -58,7 +58,7 @@ def test_default_conversion_retains_import_for_debugging(tmp_path):
     with ZipFile(source, "w") as archive:
         archive.writestr("stop.din", "VERSION;STOP_NR;STOP_NAME;IS_RESPONSIBLE_STOP\n1;1;Test;1\n")
         archive.writestr("operator.din", "VERSION;OP_CODE;OP_LONG_NAME\n1;1;Operator\n")
-        archive.writestr("line.din", "VERSION;LINE_NR;STR_LINE_VAR;LINE_DIR_NR;OP_CODE;LINE_NAME\n1;42;a;1;1;42\n")
+        archive.writestr("line.din", "VERSION;LINE_NR;STR_LINE_VAR;LINE_DIR_NR;OP_CODE;LINE_NAME;BRANCH_NR\n1;42;a;1;1;42;1\n")
     assert main(["convert", "--profile", "dino212_default", "--config", str(config),
                  "--input", str(source), "--output", str(destination), "--database", str(database)]) == 0
     with closing(sqlite3.connect(database)) as connection:
@@ -100,7 +100,7 @@ def test_end_to_end_exports_fingerprint_agency_id(tmp_path):
     with ZipFile(source, "w") as archive:
         archive.writestr("operator.din", "VERSION;OP_CODE;OP_LONG_NAME\n1;A;Operator\n")
         archive.writestr("stop.din", "VERSION;STOP_NR;STOP_NAME;GLOBAL_ID;IS_RESPONSIBLE_STOP\n1;1;Test;S1;1\n")
-        archive.writestr("line.din", "VERSION;LINE_NR;STR_LINE_VAR;LINE_DIR_NR;OP_CODE;LINE_NAME\n1;42;a;1;A;42\n")
+        archive.writestr("line.din", "VERSION;LINE_NR;STR_LINE_VAR;LINE_DIR_NR;OP_CODE;LINE_NAME;BRANCH_NR\n1;42;a;1;A;42;1\n")
     assert main(["convert", "--profile", "dino212_default", "--config", str(config),
                  "--input", str(source), "--output", str(destination)]) == 0
     with ZipFile(destination) as archive:

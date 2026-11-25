@@ -75,7 +75,7 @@ def test_consolidates_variants_and_versions_and_maps_every_source(db, caplog, mo
 
 
 @pytest.mark.parametrize("override_name", [False, True])
-def test_merge_identity_uses_source_name_and_final_mode_not_line_number(db, override_name):
+def test_template_identity_uses_branch_and_line_not_name_or_mode(db, override_name):
     create_lines(db, [
         ("1", "42", "a", "1", "A", "Blue", "10", "old"),
         ("1", "42", "b", "1", "A", "Red", "10", "red"),
@@ -94,10 +94,10 @@ def test_merge_identity_uses_source_name_and_final_mode_not_line_number(db, over
         [("Blue", 0), ("Red", 0), ("Blue", 3)]
     )
     identifiers = dict(db.execute("SELECT STR_LINE_VAR, gtfs_id FROM map_line_2_routes"))
-    assert identifiers["a"] == identifiers["c"]
-    assert len({identifiers["a"], identifiers["b"], identifiers["d"]}) == 3
+    assert identifiers["a"] == identifiers["b"]
+    assert len({identifiers["a"], identifiers["c"], identifiers["d"]}) == 3
     assert db.execute("SELECT count(*) FROM map_line_2_routes").fetchone() == (4,)
-    assert identifiers["a"] == "route:2:1:99"
+    assert identifiers["a"] == "route:1:1:42"
 
 
 def test_route_canonical_uses_version_branch_and_line_number(db):
@@ -106,11 +106,26 @@ def test_route_canonical_uses_version_branch_and_line_number(db):
         ("2", "99", "b", "1", "A", "Same", "10", "", "7"),
     ])
     transform(db)
-    assert db.execute("SELECT route_id, route_short_name FROM gtfs_routes").fetchall() == [
+    assert db.execute("SELECT route_id, route_short_name FROM gtfs_routes ORDER BY route_id").fetchall() == [
+        ("route:1:2:42", "Same"),
         ("route:2:7:99", "Same"),
     ]
     assert db.execute("SELECT gtfs_id FROM map_line_2_routes ORDER BY VERSION").fetchall() == [
-        ("route:2:7:99",), ("route:2:7:99",),
+        ("route:1:2:42",), ("route:2:7:99",),
+    ]
+
+
+def test_template_identity_distinguishes_branches_for_same_line(db):
+    create_lines(db, [
+        ("1", "42", "a", "1", "A", "Same", "10", "G", "1"),
+        ("1", "42", "b", "1", "A", "Same", "10", "H", "2"),
+    ])
+    transform(db)
+    assert db.execute("SELECT route_id FROM gtfs_routes ORDER BY route_id").fetchall() == [
+        ("route:1:1:42",), ("route:1:2:42",),
+    ]
+    assert db.execute("SELECT gtfs_id FROM map_line_2_routes ORDER BY STR_LINE_VAR").fetchall() == [
+        ("route:1:1:42",), ("route:1:2:42",),
     ]
 
 
@@ -158,7 +173,7 @@ def test_source_fields_and_computed_mode_are_available_to_template(db):
     assert db.execute("SELECT route_id FROM gtfs_routes").fetchall() == [("routes:42:A:2",)]
 
 
-def test_fingerprint_uses_only_line_name_and_resolved_mode(db):
+def test_fingerprint_uses_last_line_name_and_resolved_mode(db):
     create_lines(db, [
         ("1", "42", "a", "1", "A", "42", "10", ""),
         ("1", "99", "b", "2", "B", "42", "10", ""),
@@ -168,8 +183,18 @@ def test_fingerprint_uses_only_line_name_and_resolved_mode(db):
     transform(db, settings)
     ids = db.execute("SELECT gtfs_id FROM map_line_2_routes ORDER BY VERSION, STR_LINE_VAR").fetchall()
     assert len(ids[0][0]) == 64
-    assert ids[0] == ids[1]
-    assert ids[0] != ids[2]
+    assert ids[0] == ids[2]
+    assert ids[0] != ids[1]
+
+
+def test_distinct_merged_lines_with_same_fingerprint_fail(db):
+    create_lines(db, [
+        ("1", "42", "a", "1", "A", "Same", "10", "G"),
+        ("1", "43", "a", "1", "A", "Same", "10", "H"),
+    ])
+    settings = {**SETTINGS, "ids": {"routes": {"mode": "template", "template": "{gtfs.fingerprint}"}}}
+    with pytest.raises(CollisionError, match="identity collision.*line.din row 1 and line.din row 2"):
+        transform(db, settings)
 
 
 def test_mode_mapping_accepts_yaml_integer_keys_without_a_default(db):
@@ -178,7 +203,7 @@ def test_mode_mapping_accepts_yaml_integer_keys_without_a_default(db):
     assert db.execute("SELECT route_type FROM gtfs_routes").fetchall() == [(0,)]
 
 
-def test_transport_description_lookup_uses_line_version_and_resolved_type_for_identity(db):
+def test_transport_description_lookup_uses_selected_line_version(db):
     db.execute("UPDATE dino_means_of_transport_desc SET TMOT_NR = '0' WHERE VERSION = '2' AND MOT_NR = '10'")
     create_lines(db, [
         ("1", "42", "a", "1", "A", "42", "10", ""),
@@ -186,10 +211,10 @@ def test_transport_description_lookup_uses_line_version_and_resolved_type_for_id
     ])
     transform(db)
     assert db.execute("SELECT route_id, route_type FROM gtfs_routes ORDER BY route_type").fetchall() == [
-        ("route:1:1:42", 0), ("route:2:1:42", 2),
+        ("route:2:1:42", 2),
     ]
     assert db.execute("SELECT VERSION, gtfs_id FROM map_line_2_routes ORDER BY VERSION").fetchall() == [
-        ("1", "route:1:1:42"), ("2", "route:2:1:42"),
+        ("1", "route:2:1:42"), ("2", "route:2:1:42"),
     ]
 
 
@@ -369,7 +394,7 @@ def test_reports_missing_agency_transformer():
 
 @pytest.mark.parametrize("template,second_row,message", [
     ("same", ("1", "43", "b", "1", "A", "43", "", ""), "identity collision"),
-    ("{gtfs.canonical}", ("1", "42", "a", "1", "A", "42", "20", ""), "source identity"),
+    ("{gtfs.canonical}", ("1", "42", "a", "1", "A", "42", "20", "", "2"), "source identity"),
 ])
 def test_conflicts_fail_before_inserting_any_route_or_mapping(db, template, second_row, message):
     create_lines(db, [("1", "42", "a", "1", "A", "42", "", ""), second_row])
@@ -426,13 +451,13 @@ def test_global_route_id_is_used_verbatim_in_routes_and_mappings(db, global_id):
     assert db.execute("SELECT gtfs_id FROM map_line_2_routes").fetchall() == [(global_id,)]
 
 
-@pytest.mark.parametrize("line,code,mot", [
-    ("43", "A", ""), ("43", "B", ""), ("42", "A", "20"),
+@pytest.mark.parametrize("line,branch,code,mot", [
+    ("43", "1", "A", ""), ("43", "1", "B", ""), ("42", "2", "A", "20"),
 ])
-def test_retained_route_global_id_collisions_include_operator_and_mode_splits(db, caplog, line, code, mot):
+def test_global_id_collision_between_different_merged_lines(db, caplog, line, branch, code, mot):
     create_lines(db, [
         ("1", "42", "a", "1", "A", "Last", "", "old"),
-        ("1", line, "b", "1", code, "Other", mot, "G"),
+        ("1", line, "b", "1", code, "Other", mot, "G", branch),
         ("2", "42", "a", "1", "A", "Last", "", "G"),
     ])
     transform(db)
@@ -444,7 +469,7 @@ def test_retained_route_global_id_collisions_include_operator_and_mode_splits(db
     assert db.execute("SELECT count(*) FROM gtfs_routes").fetchone() == (2,)
 
 
-def test_global_ids_of_replaced_line_records_are_not_checked(db, caplog):
+def test_global_ids_of_replaced_line_records_are_checked(db, caplog):
     create_lines(db, [
         ("1", "42", "a", "1", "A", "Last", "", "G"),
         ("1", "43", "a", "1", "A", "Other", "", "G"),
@@ -452,7 +477,9 @@ def test_global_ids_of_replaced_line_records_are_not_checked(db, caplog):
     ])
     transform(db)
     assert db.execute("SELECT count(*) FROM gtfs_routes").fetchone() == (2,)
-    assert not any(record.levelno >= logging.WARNING for record in caplog.records)
+    warnings = [record.message for record in caplog.records if "global ID collision" in record.message]
+    assert len(warnings) == 1
+    assert "'G'" in warnings[0] and "line.din row 1" in warnings[0] and "line.din row 2" in warnings[0]
 
 
 @pytest.mark.parametrize("global_id", [None, "", "   "])
@@ -463,7 +490,55 @@ def test_blank_global_ids_do_not_collide_in_template_mode(db, caplog, global_id)
     ])
     transform(db)
     assert db.execute("SELECT count(*) FROM gtfs_routes").fetchone() == (2,)
-    assert not any(record.levelno >= logging.WARNING for record in caplog.records)
+    warnings = [record.message for record in caplog.records if "GLOBAL_ID is missing" in record.message]
+    assert warnings == ["line.din row 1: GLOBAL_ID is missing", "line.din row 2: GLOBAL_ID is missing"]
+    assert not any("global ID collision" in record.message for record in caplog.records)
+
+
+@pytest.mark.parametrize("mode", ["global", "template"])
+def test_missing_global_id_column_depends_on_mode(db, caplog, mode):
+    create_lines(db, [("1", "42", "a", "1", "A", "Name", "10")], COLUMNS[:-1])
+    settings = {**SETTINGS, "ids": {"routes": {"mode": mode, "template": "route:{gtfs.canonical}"}}}
+    if mode == "global":
+        with pytest.raises(InputError, match=r"line\.din row 1: GLOBAL_ID is required"):
+            transform(db, settings)
+        assert db.execute("SELECT * FROM gtfs_routes").fetchall() == []
+    else:
+        transform(db, settings)
+        assert "line.din row 1: GLOBAL_ID is missing" in caplog.text
+        assert db.execute("SELECT route_id FROM gtfs_routes").fetchall() == [("route:1:1:42",)]
+
+
+@pytest.mark.parametrize("branch", [None, "", "   "])
+def test_template_mode_requires_nonblank_branch(db, branch):
+    create_lines(db, [("1", "42", "a", "1", "A", "Name", "10", "G", branch)])
+    with pytest.raises(InputError, match=r"line\.din row 1: BRANCH_NR is required"):
+        transform(db)
+    assert db.execute("SELECT * FROM gtfs_routes").fetchall() == []
+
+
+@pytest.mark.parametrize("mode", ["global", "template"])
+def test_missing_branch_column_is_only_required_in_template_mode(db, mode):
+    db.execute(f"CREATE TABLE dino_line ({', '.join(column + ' TEXT' for column in COLUMNS)})")
+    db.execute("INSERT INTO dino_line VALUES ('1', '42', 'a', '1', 'A', 'Name', '10', 'G')")
+    settings = {**SETTINGS, "ids": {"routes": {"mode": mode, "template": "{line.LINE_NR}"}}}
+    if mode == "template":
+        with pytest.raises(InputError, match=r"line\.din is missing required columns: BRANCH_NR"):
+            transform(db, settings)
+    else:
+        transform(db, settings)
+        assert db.execute("SELECT route_id FROM gtfs_routes").fetchall() == [("G",)]
+
+
+def test_global_mode_rejects_missing_id_even_if_a_later_line_is_valid(db):
+    create_lines(db, [
+        ("1", "42", "a", "1", "A", "Name", "", ""),
+        ("2", "42", "a", "1", "A", "Name", "", "G"),
+    ])
+    with pytest.raises(InputError, match=r"line\.din row 1: GLOBAL_ID is required"):
+        transform(db, {**SETTINGS, "ids": {"routes": {"mode": "global"}}})
+    assert db.execute("SELECT * FROM gtfs_routes").fetchall() == []
+    assert db.execute("SELECT * FROM map_line_2_routes").fetchall() == []
 
 
 def test_existing_route_id_is_a_collision(db):
@@ -476,7 +551,7 @@ def test_existing_route_id_is_a_collision(db):
 @pytest.mark.parametrize("value", [None, "", "   "])
 def test_missing_public_name_fails_with_dino_attribute(db, value):
     create_lines(db, [("1", "42", "a", "1", "A", value, "", "")])
-    with pytest.raises(InputError, match=r"^LINE_NAME missing in line\.din row 1$"):
+    with pytest.raises(InputError, match=r"^line\.din row 1: LINE_NAME is required; configure defaults\.routes\.route_short_name$"):
         transform(db)
     assert db.execute("SELECT * FROM gtfs_routes").fetchall() == []
     assert db.execute("SELECT * FROM map_line_2_routes").fetchall() == []
@@ -485,13 +560,22 @@ def test_missing_public_name_fails_with_dino_attribute(db, value):
 @pytest.mark.parametrize("field", ["route_short_name", "route_long_name"])
 @pytest.mark.parametrize("section", ["defaults", "overrides"])
 @pytest.mark.parametrize("value", [None, "", "   "])
-def test_configured_public_name_does_not_replace_missing_identity_name(db, field, section, value):
-    create_lines(db, [("1", "42", "a", "1", "A", value, "", "")])
-    settings = {**SETTINGS, section: {"routes": {"route_type": 3, field: "Configured"}}}
-    with pytest.raises(InputError, match=r"^LINE_NAME missing in line\.din row 1$"):
+@pytest.mark.parametrize("mode", ["global", "template"])
+def test_only_default_short_name_falls_back_when_line_name_missing(db, field, section, value, mode):
+    create_lines(db, [("1", "42", "a", "1", "A", value, "", "G")])
+    settings = {
+        **SETTINGS, "ids": {"routes": {"mode": mode, "template": "route:{gtfs.fingerprint}"}},
+        section: {"routes": {"route_type": 3, field: "Configured"}},
+    }
+    if section == "defaults" and field == "route_short_name":
         transform(db, settings)
-    assert db.execute("SELECT * FROM gtfs_routes").fetchall() == []
-    assert db.execute("SELECT * FROM map_line_2_routes").fetchall() == []
+        assert db.execute("SELECT route_short_name FROM gtfs_routes").fetchall() == [("Configured",)]
+        assert db.execute("SELECT count(*) FROM map_line_2_routes").fetchone() == (1,)
+    else:
+        with pytest.raises(InputError, match=r"line\.din row 1: LINE_NAME is required.*defaults\.routes\.route_short_name"):
+            transform(db, settings)
+        assert db.execute("SELECT * FROM gtfs_routes").fetchall() == []
+        assert db.execute("SELECT * FROM map_line_2_routes").fetchall() == []
 
 
 @pytest.mark.parametrize("ids,identifier", [
@@ -519,10 +603,32 @@ def test_last_route_with_missing_name_fails_without_reusing_an_older_name(db):
         ("2", "42", "a", "1", "A", "Old name", "", ""),
         ("1", "42", "b", "2", "A", "", "", ""),
     ])
-    with pytest.raises(InputError, match=r"^LINE_NAME missing in line\.din row 2$"):
+    with pytest.raises(InputError, match=r"^line\.din row 2: LINE_NAME is required; configure defaults\.routes\.route_short_name$"):
         transform(db)
     assert db.execute("SELECT * FROM gtfs_routes").fetchall() == []
     assert db.execute("SELECT * FROM map_line_2_routes").fetchall() == []
+
+
+@pytest.mark.parametrize("mode", ["global", "template"])
+@pytest.mark.parametrize("override", [False, True])
+def test_last_line_uses_default_name_and_applies_override(db, mode, override):
+    create_lines(db, [
+        ("1", "42", "a", "1", "A", "Old", "", "G"),
+        ("2", "42", "b", "1", "A", "", "", "G"),
+    ])
+    settings = {
+        **SETTINGS,
+        "ids": {"routes": {"mode": mode, "template": "route:{gtfs.fingerprint}"}},
+        "defaults": {"routes": {"route_type": 3, "route_short_name": "Default"}},
+    }
+    if override:
+        settings["overrides"] = {"routes": {"route_short_name": "Forced"}}
+    transform(db, settings)
+    route_id, name = db.execute("SELECT route_id, route_short_name FROM gtfs_routes").fetchone()
+    assert name == ("Forced" if override else "Default")
+    assert db.execute("SELECT gtfs_id FROM map_line_2_routes ORDER BY VERSION").fetchall() == [
+        (route_id,), (route_id,),
+    ]
 
 
 def test_replaced_route_ids_do_not_cause_false_collisions(db):
@@ -578,7 +684,14 @@ def test_requires_line_source_and_composite_key(db):
         transformer.transform(db, SETTINGS)
 
 
-def test_requires_line_name_column_even_with_configured_output_name(db):
-    create_lines(db, [], COLUMNS[:5] + COLUMNS[6:])
-    with pytest.raises(InputError, match="line.din is missing required columns: LINE_NAME"):
-        transform(db, {**SETTINGS, "overrides": {"routes": {"route_short_name": "Configured"}}})
+@pytest.mark.parametrize("has_default", [False, True])
+def test_missing_line_name_column_uses_default_or_fails(db, has_default):
+    create_lines(db, [("1", "42", "a", "1", "A", "10", "G")], COLUMNS[:5] + COLUMNS[6:])
+    settings = {**SETTINGS, "defaults": {"routes": {"route_type": 3}}}
+    if has_default:
+        settings["defaults"]["routes"]["route_short_name"] = "Default"
+        transform(db, settings)
+        assert db.execute("SELECT route_short_name FROM gtfs_routes").fetchall() == [("Default",)]
+    else:
+        with pytest.raises(InputError, match=r"line\.din row 1: LINE_NAME is required"):
+            transform(db, settings)
