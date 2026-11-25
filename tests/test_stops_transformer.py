@@ -643,12 +643,55 @@ def test_missing_area_uses_point_or_station_coordinates_and_warns_for_zero(caplo
             assert "missing coordinates; using 0,0" in point_warnings[0]
 
 
-def test_stop_defaults_override_mapped_fields():
+@pytest.mark.parametrize("section,expected_name", [("defaults", "Source"), ("overrides", "Configured")])
+def test_stop_configured_fields_follow_precedence(section, expected_name):
     with temporary_database() as db:
         create_table(db, "stop", ["VERSION", "STOP_NR", "STOP_NAME", "GLOBAL_ID"], [("1", "1", "Source", "S")])
-        settings = {**GLOBAL, "defaults": {"stops": {"stop_name": "Default", "stop_desc": "Description"}}}
+        settings = {**GLOBAL, section: {"stops": {"stop_name": "Configured", "stop_desc": "Description"}}}
         transform(db, settings)
-        assert db.execute("SELECT stop_name, stop_desc FROM gtfs_stops").fetchone() == ("Default", "Description")
+        assert db.execute("SELECT stop_name, stop_desc FROM gtfs_stops").fetchone() == (expected_name, "Description")
+
+
+def test_stop_defaults_preserve_coordinates_location_types_and_zero_access():
+    with temporary_database() as db:
+        create_table(db, "stop", ["VERSION", "STOP_NR", "STOP_NAME", "GLOBAL_ID", "STOP_POS_X", "STOP_POS_Y"],
+                     [("1", "1", "Source", "S", "0", "0")])
+        create_table(db, "stop_point", ["VERSION", "STOP_NR", "STOP_AREA_NR", "STOPPING_POINT_NR", "GLOBAL_ID",
+                                       "STREET_ACCESS"], [("1", "1", "1", "1", "P", "0")])
+        transform(db, {**GLOBAL, "defaults": {"stops": {
+            "stop_name": "Default", "stop_lat": 52, "stop_lon": 13, "location_type": 3, "stop_access": 1,
+        }}})
+        assert db.execute(
+            "SELECT stop_name, stop_lat, stop_lon, location_type, stop_access FROM gtfs_stops ORDER BY location_type"
+        ).fetchall() == [("Source", 0.0, 0.0, 0, 0), ("Source", 0.0, 0.0, 1, 1)]
+
+
+@pytest.mark.parametrize("section,expected_xy", [("defaults", (0.0, 0.0)), ("overrides", (52, 13))])
+def test_stop_coordinate_overrides_are_distinct_from_defaults(section, expected_xy):
+    with temporary_database() as db:
+        create_table(db, "stop", ["VERSION", "STOP_NR", "STOP_NAME", "GLOBAL_ID", "STOP_POS_X", "STOP_POS_Y"],
+                     [("1", "1", "Source", "S", "0", "0")])
+        transform(db, {**GLOBAL, section: {"stops": {"stop_lat": 52, "stop_lon": 13}}})
+        assert db.execute("SELECT stop_lat, stop_lon FROM gtfs_stops").fetchone() == expected_xy
+
+
+def test_missing_stop_coordinates_use_defaults_before_zero_fallback(caplog):
+    with temporary_database() as db:
+        create_table(db, "stop", ["VERSION", "STOP_NR", "STOP_NAME", "GLOBAL_ID"], [("1", "1", "Source", "S")])
+        create_table(db, "stop_point", ["VERSION", "STOP_NR", "STOP_AREA_NR", "STOPPING_POINT_NR", "GLOBAL_ID"],
+                     [("1", "1", "1", "1", "P")])
+        transform(db, {**GLOBAL, "defaults": {"stops": {"stop_lat": 52, "stop_lon": 13}}})
+        assert db.execute("SELECT stop_lat, stop_lon FROM gtfs_stops").fetchall() == [(52, 13), (52, 13)]
+        assert not any(record.levelno >= logging.WARNING for record in caplog.records)
+
+
+def test_stop_overrides_clear_optional_fields_without_reapplying_defaults():
+    with temporary_database() as db:
+        create_table(db, "stop", ["VERSION", "STOP_NR", "STOP_NAME", "GLOBAL_ID", "STOP_SHORTNAME"],
+                     [("1", "1", "Source", "S", "Code")])
+        transform(db, {**GLOBAL, "defaults": {"stops": {"stop_code": "Default"}},
+                       "overrides": {"stops": {"stop_code": None}}})
+        assert db.execute("SELECT stop_code FROM gtfs_stops").fetchone() == (None,)
 
 
 @pytest.mark.parametrize("source_name", [None, "", "   "])
@@ -670,10 +713,11 @@ def test_missing_stop_name_warns_and_is_inherited_by_platform(caplog, source_nam
         assert any("stop.din row 1" in record.message and "STOP_NAME" in record.message for record in caplog.records)
 
 
-def test_default_stop_name_avoids_missing_name_warning(caplog):
+@pytest.mark.parametrize("section", ["defaults", "overrides"])
+def test_configured_stop_name_avoids_missing_name_warning(caplog, section):
     with temporary_database() as db:
         create_table(db, "stop", ["VERSION", "STOP_NR", "GLOBAL_ID"], [("1", "1", "S")])
         with caplog.at_level(logging.WARNING):
-            transform(db, {**GLOBAL, "defaults": {"stops": {"stop_name": "Default"}}})
+            transform(db, {**GLOBAL, section: {"stops": {"stop_name": "Default"}}})
         assert db.execute("SELECT stop_name FROM gtfs_stops").fetchone() == ("Default",)
         assert not any("STOP_NAME" in record.message for record in caplog.records)

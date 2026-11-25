@@ -118,26 +118,43 @@ def test_key_and_fingerprint_share_the_same_identity_components():
     assert transformer.calls == 1
 
 
-def test_defaults_apply_to_any_gtfs_entity_and_override_values():
+def test_defaults_only_fill_missing_or_blank_values():
+    transformer = ExampleTransformer(())
+    assert transformer.apply_configuration(
+        {"stop_name": "Source", "stop_code": "", "stop_desc": "  ", "stop_lat": 0.0, "stop_access": False},
+        {"stop_name": "Default", "stop_code": "Code", "stop_desc": "Description", "stop_lat": 52,
+         "stop_access": True, "stop_lon": 13},
+        {},
+    ) == {
+        "stop_name": "Source", "stop_code": "Code", "stop_desc": "Description",
+        "stop_lat": 0.0, "stop_access": False, "stop_lon": 13,
+    }
+
+
+def test_overrides_take_precedence_and_all_configured_columns_are_inserted():
     transformer = ExampleTransformer(())
     with temporary_database() as db:
-        defaults = transformer.configured_defaults(db, {"defaults": {
-            "stops": {"stop_name": "Configured", "wheelchair_boarding": 0, "stop_desc": None}
-        }}, "stops")
-        assert transformer.apply_defaults(
-            {"stop_id": "s", "stop_name": "Source", "wheelchair_boarding": 1, "stop_desc": "Source"},
-            defaults,
-        ) == {"stop_id": "s", "stop_name": "Configured", "wheelchair_boarding": 0, "stop_desc": None}
-        transformer.insert_with_defaults(
+        settings = {
+            "defaults": {"stops": {"stop_name": "Default", "wheelchair_boarding": 1, "stop_desc": "Description"}},
+            "overrides": {"stops": {"stop_name": "Forced", "stop_desc": None, "stop_code": "Code"}},
+        }
+        defaults = transformer.configured_fields(db, settings, "stops", "defaults")
+        overrides = transformer.configured_fields(db, settings, "stops", "overrides")
+        transformer.insert_with_configuration(
             db, "stops", ("stop_id", "stop_name"),
-            [{"stop_id": "s", "stop_name": "Source"}], defaults,
+            [{"stop_id": "s", "stop_name": "Source"}], defaults, overrides,
         )
-        assert db.execute("SELECT stop_id, stop_name, wheelchair_boarding, stop_desc FROM gtfs_stops").fetchall() == [
-            ("s", "Configured", 0, None)
+        assert db.execute(
+            "SELECT stop_id, stop_name, wheelchair_boarding, stop_desc, stop_code FROM gtfs_stops"
+        ).fetchall() == [
+            ("s", "Forced", 1, None, "Code")
         ]
 
 
-@pytest.mark.parametrize("defaults, message", [
+@pytest.mark.parametrize("section", ["defaults", "overrides"])
+@pytest.mark.parametrize("configured, message", [
+    (None, "must be a mapping"),
+    ({"stops": None}, "must be an entity mapping"),
     ({"stops": {"STOP_NAME": "Wrong case"}}, "Unknown GTFS field"),
     ({"stops": {"missing": "x"}}, "Unknown GTFS field"),
     ({"missing": {}}, "Unknown GTFS entity"),
@@ -146,7 +163,8 @@ def test_defaults_apply_to_any_gtfs_entity_and_override_values():
     ({"locations": {"id": "x"}}, "ID field"),
     ({"stops": {"stop_name": ["invalid"]}}, "scalar SQLite value"),
     ({"stops": {"stop_lat": float("nan")}}, "must be finite"),
+    ({"stops": {"wheelchair_boarding": 2**63}}, "SQLite integer range"),
 ])
-def test_invalid_defaults_are_rejected_even_for_other_entities(defaults, message):
+def test_invalid_configured_fields_are_rejected_even_for_other_entities(section, configured, message):
     with temporary_database() as db, pytest.raises(ConfigurationError, match=message):
-        ExampleTransformer(()).configured_defaults(db, {"defaults": defaults}, "agency")
+        ExampleTransformer(()).configured_fields(db, {section: configured}, "agency", section)

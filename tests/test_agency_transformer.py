@@ -61,32 +61,49 @@ def test_optional_source_columns_and_language():
         assert db.execute("SELECT * FROM map_operator_2_agency").fetchall() == [(None, "A", "agency:A")]
 
 
-def test_defaults_override_source_and_add_gtfs_fields():
+@pytest.mark.parametrize("section,source_name", [("defaults", "Source"), ("overrides", "Configured")])
+def test_configured_agency_name_precedence_and_additional_fields(section, source_name):
     settings = {**SETTINGS, "defaults": {"agency": {
-        "agency_url": "https://example.org", "agency_timezone": "UTC", "agency_name": "Configured",
+        "agency_url": "https://example.org", "agency_timezone": "UTC",
         "agency_phone": "+49 123", "agency_email": "contact@example.org", "cemv_support": 0,
     }}}
+    settings.setdefault(section, {}).setdefault("agency", {})["agency_name"] = "Configured"
     with temporary_database() as db:
         db.execute("CREATE TABLE dino_operator (OP_CODE TEXT, OP_LONG_NAME TEXT)")
-        db.executemany("INSERT INTO dino_operator VALUES (?, ?)", [("A", "Source"), ("A", "Changed"), ("B", "")])
+        db.executemany("INSERT INTO dino_operator VALUES (?, ?)", [("A", "Source"), ("A", "Source"), ("B", "")])
         transform(db, settings)
         assert db.execute(
             "SELECT agency_id, agency_name, agency_phone, agency_email, cemv_support FROM gtfs_agency ORDER BY agency_id"
         ).fetchall() == [
-            ("agency:A", "Configured", "+49 123", "contact@example.org", 0),
+            ("agency:A", source_name, "+49 123", "contact@example.org", 0),
             ("agency:B", "Configured", "+49 123", "contact@example.org", 0),
         ]
 
 
-def test_default_name_allows_operator_without_name_column():
-    settings = {**SETTINGS, "defaults": {"agency": {
-        **SETTINGS["defaults"]["agency"], "agency_name": "Configured"
-    }}}
+@pytest.mark.parametrize("section", ["defaults", "overrides"])
+def test_configured_name_allows_operator_without_name_column(section):
+    settings = {**SETTINGS, "defaults": {"agency": {**SETTINGS["defaults"]["agency"]}}}
+    settings.setdefault(section, {}).setdefault("agency", {})["agency_name"] = "Configured"
     with temporary_database() as db:
         db.execute("CREATE TABLE dino_operator (OP_CODE TEXT)")
         db.execute("INSERT INTO dino_operator VALUES ('A')")
         transform(db, settings)
         assert db.execute("SELECT agency_name FROM gtfs_agency").fetchall() == [("Configured",)]
+
+
+def test_agency_required_configuration_can_come_from_overrides_and_optional_values_can_be_cleared():
+    settings = {
+        "ids": SETTINGS["ids"],
+        "defaults": {"agency": {"agency_lang": "de"}},
+        "overrides": {"agency": {"agency_url": "https://example.org", "agency_timezone": "UTC", "agency_lang": None}},
+    }
+    with temporary_database() as db:
+        db.execute("CREATE TABLE dino_operator (OP_CODE TEXT, OP_LONG_NAME TEXT)")
+        db.execute("INSERT INTO dino_operator VALUES ('A', 'Agency')")
+        transform(db, settings)
+        assert db.execute("SELECT agency_url, agency_timezone, agency_lang FROM gtfs_agency").fetchall() == [
+            ("https://example.org", "UTC", None)
+        ]
 
 
 @pytest.mark.parametrize("settings", [

@@ -43,7 +43,12 @@ def test_default_conversion_retains_import_for_debugging(tmp_path):
     config.write_text(
         "input:\n  encoding: utf-8\n"
         "defaults:\n  agency:\n    agency_url: https://example.org\n    agency_timezone: UTC\n"
-        "  routes:\n    route_type: 3\n"
+        "    agency_name: Fallback agency\n"
+        "  routes:\n    route_type: 3\n    route_short_name: Fallback route\n"
+        "  stops:\n    stop_name: Fallback stop\n"
+        "overrides:\n  agency:\n    agency_timezone: Europe/Berlin\n"
+        "  stops:\n    stop_desc: Configured description\n"
+        "  routes:\n    route_long_name: Configured long name\n"
         "ids:\n  agency:\n    mode: template\n    template: 'operator-{operator.OP_CODE}'\n"
         "  stops:\n    mode: template\n    template: 'stop:{gtfs.canonical}'\n"
         "  routes:\n    mode: template\n    template: 'route-{line.LINE_NR}-{gtfs.route_type}'\n"
@@ -60,6 +65,10 @@ def test_default_conversion_retains_import_for_debugging(tmp_path):
             ("stop:7:station1:1", "Test")
         ]
         assert connection.execute("SELECT agency_id FROM gtfs_agency").fetchall() == [("operator-1",)]
+        assert connection.execute("SELECT agency_name, agency_timezone FROM gtfs_agency").fetchall() == [
+            ("Operator", "Europe/Berlin")
+        ]
+        assert connection.execute("SELECT stop_desc FROM gtfs_stops").fetchall() == [("Configured description",)]
         assert connection.execute("SELECT * FROM map_operator_2_agency").fetchall() == [("1", "1", "operator-1")]
         assert connection.execute("SELECT * FROM map_stop_2_stops").fetchall() == [("1", "1", "stop:7:station1:1")]
         assert connection.execute("SELECT * FROM map_stop_point_2_stops").fetchall() == []
@@ -68,6 +77,9 @@ def test_default_conversion_retains_import_for_debugging(tmp_path):
         ]
         assert connection.execute("SELECT * FROM map_line_2_routes").fetchall() == [
             ("1", "42", "a", "1", "route-42-3")
+        ]
+        assert connection.execute("SELECT route_short_name, route_long_name FROM gtfs_routes").fetchall() == [
+            ("42", "Configured long name")
         ]
     assert destination.exists()
 
