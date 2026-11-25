@@ -182,10 +182,22 @@ def test_agency_template_supports_generic_entity_and_canonical():
         "mode": "template", "template": "{gtfs.entity}:{gtfs.canonical}"
     }}}
     with temporary_database() as db:
-        db.execute("CREATE TABLE dino_operator (OP_CODE TEXT, OP_LONG_NAME TEXT)")
-        db.execute("INSERT INTO dino_operator VALUES ('A:1', 'Agency')")
+        db.execute("CREATE TABLE dino_operator (VERSION TEXT, OP_CODE TEXT, OP_LONG_NAME TEXT)")
+        db.execute("INSERT INTO dino_operator VALUES ('2', 'A:1', 'Agency')")
         transform(db, settings)
-        assert db.execute("SELECT agency_id FROM gtfs_agency").fetchall() == [("agency:3:A:1",)]
+        assert db.execute("SELECT agency_id FROM gtfs_agency").fetchall() == [("agency:2:A:1",)]
+
+
+def test_agency_canonical_requires_version_and_operator_code():
+    settings = {**SETTINGS, "ids": {"agency": {
+        "mode": "template", "template": "{gtfs.canonical}"
+    }}}
+    with temporary_database() as db:
+        db.execute("CREATE TABLE dino_operator (OP_CODE TEXT, OP_LONG_NAME TEXT)")
+        db.execute("INSERT INTO dino_operator VALUES ('A', 'Agency')")
+        with pytest.raises(InputError, match="VERSION is required"):
+            transform(db, settings)
+        assert db.execute("SELECT * FROM gtfs_agency").fetchall() == []
 
 
 def test_fingerprint_collision_fails_without_partial_inserts():

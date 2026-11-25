@@ -63,7 +63,7 @@ def test_default_conversion_retains_import_for_debugging(tmp_path):
     with closing(sqlite3.connect(database)) as connection:
         assert connection.execute("SELECT STOP_NR, STOP_NAME FROM dino_stop").fetchall() == [("1", "Test")]
         assert connection.execute("SELECT stop_id, stop_name FROM gtfs_stops").fetchall() == [
-            ("stop:7:station1:1", "Test")
+            ("stop:1:1", "Test")
         ]
         assert connection.execute("SELECT agency_id FROM gtfs_agency").fetchall() == [("operator-1",)]
         assert connection.execute("SELECT agency_name, agency_timezone FROM gtfs_agency").fetchall() == [
@@ -71,7 +71,7 @@ def test_default_conversion_retains_import_for_debugging(tmp_path):
         ]
         assert connection.execute("SELECT stop_desc FROM gtfs_stops").fetchall() == [("Configured description",)]
         assert connection.execute("SELECT * FROM map_operator_2_agency").fetchall() == [("1", "1", "operator-1")]
-        assert connection.execute("SELECT * FROM map_stop_2_stops").fetchall() == [("1", "1", "stop:7:station1:1")]
+        assert connection.execute("SELECT * FROM map_stop_2_stops").fetchall() == [("1", "1", "stop:1:1")]
         assert connection.execute("SELECT * FROM map_stop_point_2_stops").fetchall() == []
         assert connection.execute("SELECT route_id, agency_id, route_type FROM gtfs_routes").fetchall() == [
             ("route-42-3", "operator-1", 3)

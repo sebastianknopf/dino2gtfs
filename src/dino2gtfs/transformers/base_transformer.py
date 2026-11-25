@@ -73,6 +73,20 @@ class TransformerBase(Transformer, ABC):
     ) -> tuple[str, ...]:
         """Return canonical components using source rows and computed gtfs fields."""
 
+    def canonical_value(
+        self, sources: Mapping[str, Mapping[str, object]], context: str,
+        components: tuple[str, ...] | None = None,
+    ) -> str:
+        if components is None:
+            components = self.fingerprint_components(sources, context)
+        
+        if not components or any(not isinstance(component, str) for component in components):
+            raise InputError(f"{context}: canonical requires canonical string components")
+
+        return "".join(
+            f"{len(component.encode('utf-8'))}:{component}" for component in components
+        )
+
     def configured_fields(
         self, database: sqlite3.Connection, settings: Mapping[str, Any], entity: str, section: str
     ) -> dict[str, object]:
@@ -172,19 +186,18 @@ class TransformerBase(Transformer, ABC):
         needs_key = template.requires_field("gtfs", "canonical")
         needs_fingerprint = template.requires_field("gtfs", "fingerprint")
         if needs_key or needs_fingerprint:
-            components = self.fingerprint_components({**sources, "gtfs": virtual}, context)
-            if not components or any(not isinstance(component, str) for component in components):
-                field = "fingerprint" if needs_fingerprint else "canonical"
-                
-                raise InputError(f"{context}: {field} requires canonical string components")
-            
-            encoded = [component.encode("utf-8") for component in components]
-            if needs_key:
-                virtual["canonical"] = "".join(
-                    f"{len(data)}:{component}" for component, data in zip(components, encoded)
-                )
-            
+            template_sources = {**sources, "gtfs": virtual}
+            components = None
             if needs_fingerprint:
+                components = self.fingerprint_components(template_sources, context)
+                if not components or any(not isinstance(component, str) for component in components):
+                    raise InputError(f"{context}: fingerprint requires canonical string components")
+                
+            if needs_key:
+                virtual["canonical"] = self.canonical_value(template_sources, context, components)
+
+            if needs_fingerprint:
+                encoded = [component.encode("utf-8") for component in components]
                 digest = hashlib.sha256()
                 for data in encoded:
                     digest.update(len(data).to_bytes(8, "big"))

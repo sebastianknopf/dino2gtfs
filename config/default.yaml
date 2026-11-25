@@ -31,7 +31,7 @@ mapping:
 ids:
   agency:
     mode: template
-    template: "agency:{operator.OP_CODE}"
+    template: "{gtfs.canonical}"
   levels:
     mode: template
     template: "level:{stop_area.VERSION}:{stop_area.STOP_NR}:{stop_area.STOP_AREA_LEVEL}"

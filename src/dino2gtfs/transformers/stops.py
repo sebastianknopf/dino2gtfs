@@ -135,6 +135,19 @@ class StopsTransformer(TransformerBase):
         
         return ("station", *_source_key(sources["stop"], ("STOP_NR",), context))
 
+    def canonical_value(
+        self, sources: Mapping[str, Mapping[str, object]], context: str,
+        components: tuple[str, ...] | None = None,
+    ) -> str:
+        if "stop_point" in sources:
+            components = _source_key(
+                sources["stop_point"], ("VERSION", "STOP_NR", "STOP_AREA_NR", "STOPPING_POINT_NR"), context
+            )
+        else:
+            components = _source_key(sources["stop"], ("VERSION", "STOP_NR"), context)
+
+        return ":".join(components)
+
     def _identifier(
         self, mode: str, template: IdTemplate | None, sources: Mapping[str, Mapping[str, object]], context: str
     ) -> str:

@@ -76,6 +76,12 @@ class RoutesTransformer(TransformerBase):
             _required(sources["gtfs"], "route_type", context),
         )
 
+    def canonical_value(
+        self, sources: Mapping[str, Mapping[str, object]], context: str,
+        components: tuple[str, ...] | None = None,
+    ) -> str:
+        return ":".join(_source_key(sources["line"], ("VERSION", "BRANCH_NR", "LINE_NR"), context))
+
     def transform(self, database: sqlite3.Connection, settings: Mapping[str, Any]) -> None:
         defaults = self.configured_fields(database, settings, "routes", "defaults")
         overrides = self.configured_fields(database, settings, "routes", "overrides")

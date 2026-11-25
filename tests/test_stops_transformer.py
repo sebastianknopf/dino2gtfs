@@ -130,8 +130,8 @@ def test_template_mode_generates_distinct_ids_and_parent_reference(caplog):
         ])
         transform(db, TEMPLATE)
         assert db.execute("SELECT stop_id, parent_station FROM gtfs_stops ORDER BY location_type DESC").fetchall() == [
-            ("stop:station:7:station2:10", None),
-            ("stop:platform:8:platform2:101:21:3", "stop:station:7:station2:10"),
+            ("stop:station:1:10", None),
+            ("stop:platform:1:10:2:3", "stop:station:1:10"),
         ]
         assert not any("global ID collision" in record.message for record in caplog.records)
 
@@ -281,7 +281,7 @@ def test_zero_area_global_id_reuse_between_stations_depends_on_mode(caplog, sett
 
 
 @pytest.mark.parametrize("template", ["{gtfs.stop_kind}:{gtfs.canonical}", "{gtfs.canonical}", "{gtfs.fingerprint}"])
-def test_template_identity_does_not_depend_on_version(template):
+def test_template_identity_uses_version_only_for_canonical(template):
     ids = []
     settings = {"ids": {"stops": {"mode": "template", "template": template}}}
     for version in ("1", "2"):
@@ -292,7 +292,10 @@ def test_template_identity_does_not_depend_on_version(template):
             ])
             transform(db, settings)
             ids.append(db.execute("SELECT stop_id, parent_station FROM gtfs_stops ORDER BY location_type DESC").fetchall())
-    assert ids[0] == ids[1]
+    if "fingerprint" in template:
+        assert ids[0] == ids[1]
+    else:
+        assert ids[0] != ids[1]
 
 
 def test_station_coordinate_fallback_uses_station_version_crs():

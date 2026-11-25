@@ -5,7 +5,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from dino2gtfs.domain.errors import CollisionError, ConfigurationError, InputError
-from dino2gtfs.transformers.base_transformer import TransformerBase
+from dino2gtfs.transformers.base_transformer import TransformerBase, required_source_value as _required
 
 LOGGER = logging.getLogger(__name__)
 NAME_COLUMNS = ("OP_TRADING_NAME", "OP_LONG_NAME", "OP_PUBLIC_SHORT")
@@ -26,6 +26,13 @@ class AgencyTransformer(TransformerBase):
         if not isinstance(code, str) or not code.strip():
             raise InputError(f"{context}: OP_CODE is required")
         return (code,)
+
+    def canonical_value(
+        self, sources: Mapping[str, Mapping[str, object]], context: str,
+        components: tuple[str, ...] | None = None,
+    ) -> str:
+        operator = sources["operator"]
+        return ":".join(_required(operator, field, context) for field in ("VERSION", "OP_CODE"))
 
     def transform(self, database: sqlite3.Connection, settings: Mapping[str, Any]) -> None:
         defaults = self.configured_fields(database, settings, "agency", "defaults")
