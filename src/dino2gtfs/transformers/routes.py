@@ -56,7 +56,7 @@ def _mode_mapping(settings: Mapping[str, Any]) -> dict[str, int]:
 
 
 class RoutesTransformer(TransformerBase):
-    """Consolidate line variants by line number and resolved GTFS mode."""
+    """Consolidate line variants by LINE_NAME and resolved GTFS mode."""
 
     def initialize(self, database: sqlite3.Connection, settings: Mapping[str, Any]) -> None:
         database.execute(
@@ -67,8 +67,12 @@ class RoutesTransformer(TransformerBase):
     def fingerprint_components(
         self, sources: Mapping[str, Mapping[str, object]], context: str
     ) -> tuple[str, ...]:
+        name = _optional(sources["line"], "LINE_NAME")
+        if name is None:
+            raise InputError(f"LINE_NAME missing in {context}")
+
         return (
-            _required(sources["line"], "LINE_NR", context),
+            name,
             _required(sources["gtfs"], "route_type", context),
         )
 
@@ -98,7 +102,7 @@ class RoutesTransformer(TransformerBase):
         
         template = self.make_id_template(settings, "routes", {"line": "line.din"}) if mode == "template" else None
 
-        columns = _columns(database, "line", LINE_KEY)
+        columns = _columns(database, "line", (*LINE_KEY, "LINE_NAME"))
         if template is not None:
             self.validate_template_fields(template, {"line": columns | {"OP_CODE"}}, ("route_type",))
         
