@@ -3,12 +3,57 @@ import hashlib
 import math
 import sqlite3
 from abc import ABC, abstractmethod
-from collections.abc import Collection, Iterable, Mapping
+from collections.abc import Collection, Iterable, Iterator, Mapping
 from typing import Any
 
 from dino2gtfs.domain.errors import ConfigurationError, InputError
 from dino2gtfs.domain.id_template import IdTemplate
 from dino2gtfs.transformers.intf_transformer import Transformer
+
+
+Row = dict[str, object]
+SourceKey = tuple[str, ...]
+
+
+def source_columns(
+    database: sqlite3.Connection, table: str, required: tuple[str, ...], optional: bool = False
+) -> set[str]:
+    columns = {row[1].upper() for row in database.execute("SELECT * FROM pragma_table_info(?)", ("dino_" + table,))}
+    if not columns:
+        if optional:
+            return set()
+        
+        raise InputError(f"Missing DINO source file {table}.din")
+    
+    missing = set(required) - columns
+    if missing:
+        raise InputError(f"{table}.din is missing required columns: {', '.join(sorted(missing))}")
+    
+    return columns
+
+
+def source_rows(database: sqlite3.Connection, table: str) -> Iterator[tuple[int, Row]]:
+    cursor = database.execute(f'SELECT rowid, * FROM "dino_{table}"')
+    names = [column[0].upper() for column in cursor.description[1:]]
+    for rowid, *values in cursor:
+        yield rowid, dict(zip(names, values))
+
+
+def required_source_value(row: Mapping[str, object], name: str, context: str) -> str:
+    value = row.get(name)
+    if not isinstance(value, str) or not value.strip():
+        raise InputError(f"{context}: {name} is required")
+    
+    return value
+
+
+def optional_source_value(row: Mapping[str, object], name: str) -> str | None:
+    value = row.get(name)
+    return value if isinstance(value, str) and value.strip() else None
+
+
+def source_key(row: Mapping[str, object], names: tuple[str, ...], context: str) -> SourceKey:
+    return tuple(required_source_value(row, name, context) for name in names)
 
 
 class TransformerBase(Transformer, ABC):
@@ -26,7 +71,7 @@ class TransformerBase(Transformer, ABC):
     def fingerprint_components(
         self, sources: Mapping[str, Mapping[str, object]], context: str
     ) -> tuple[str, ...]:
-        """Return ordered canonical identity components for the entity."""
+        """Return canonical components using source rows and computed gtfs fields."""
 
     def configured_defaults(
         self, database: sqlite3.Connection, settings: Mapping[str, Any], entity: str
@@ -105,6 +150,7 @@ class TransformerBase(Transformer, ABC):
     def render_id(
         self, template: IdTemplate, sources: Mapping[str, Mapping[str, object]], context: str,
         virtual_fields: Mapping[str, str] | None = None,
+        optional_fields: Collection[tuple[str, str]] = (),
     ) -> str:
         if "gtfs" in sources:
             raise ValueError("gtfs is reserved for virtual template fields")
@@ -118,7 +164,7 @@ class TransformerBase(Transformer, ABC):
         needs_key = template.requires_field("gtfs", "canonical")
         needs_fingerprint = template.requires_field("gtfs", "fingerprint")
         if needs_key or needs_fingerprint:
-            components = self.fingerprint_components(sources, context)
+            components = self.fingerprint_components({**sources, "gtfs": virtual}, context)
             if not components or any(not isinstance(component, str) for component in components):
                 field = "fingerprint" if needs_fingerprint else "canonical"
                 
@@ -138,4 +184,4 @@ class TransformerBase(Transformer, ABC):
                 
                 virtual["fingerprint"] = digest.hexdigest()
         
-        return template.render({**sources, "gtfs": virtual}, context)
+        return template.render({**sources, "gtfs": virtual}, context, optional_fields=optional_fields)

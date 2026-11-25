@@ -10,7 +10,8 @@ class IdTemplate:
     """Validate and render template-mode IDs from named source fields.
 
     Sources map placeholder namespaces to descriptions for diagnostics. Field
-    names are matched case-insensitively; values must be non-empty strings.
+    names are matched case-insensitively; values must be non-empty strings
+    unless explicitly declared optional when rendering.
     """
 
     def __init__(self, settings: Mapping[str, Any], entity: str, sources: Mapping[str, str]) -> None:
@@ -62,9 +63,13 @@ class IdTemplate:
                         f"{self._sources[source]} is missing column for {self._config_key}.template: {field}"
                     )
 
-    def render(self, values: Mapping[str, Mapping[str, object]], context: str) -> str:
+    def render(
+        self, values: Mapping[str, Mapping[str, object]], context: str,
+        optional_fields: Collection[tuple[str, str]] = (),
+    ) -> str:
         """Render an ID, reporting missing values with their source context."""
         normalized = {source: {key.upper(): value for key, value in row.items()} for source, row in values.items()}
+        optional = {(source, name.upper()) for source, name in optional_fields}
         
         result = []
         for literal, field in self._parts:
@@ -73,6 +78,14 @@ class IdTemplate:
                 source, _, name = field.partition(".")
                 value = normalized.get(source, {}).get(name.upper())
                 
+                if (source, name.upper()) in optional and (
+                    value is None or (isinstance(value, str) and not value.strip())
+                ):
+                    value = ""
+                    result.append(value)
+                    
+                    continue
+
                 if not isinstance(value, str) or not value.strip():
                     raise InputError(f"{context}: {field} is required by {self._config_key}.template")
                 

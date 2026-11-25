@@ -2,7 +2,7 @@
 import logging
 import math
 import sqlite3
-from collections.abc import Iterator, Mapping
+from collections.abc import Mapping
 from typing import Any
 
 from pyproj import CRS, Transformer as CrsTransformer
@@ -10,52 +10,18 @@ from pyproj.exceptions import CRSError, ProjError
 
 from dino2gtfs.domain.errors import CollisionError, ConfigurationError, InputError
 from dino2gtfs.domain.id_template import IdTemplate
-from dino2gtfs.transformers.base_transformer import TransformerBase
+from dino2gtfs.transformers.base_transformer import (
+    Row,
+    SourceKey,
+    TransformerBase,
+    optional_source_value as _optional,
+    required_source_value as _required,
+    source_columns as _columns,
+    source_key as _source_key,
+    source_rows as _rows,
+)
 
 LOGGER = logging.getLogger(__name__)
-Row = dict[str, object]
-SourceKey = tuple[str, ...]
-
-
-def _columns(database: sqlite3.Connection, table: str, required: tuple[str, ...], optional: bool = False) -> set[str]:
-    columns = {row[1].upper() for row in database.execute("SELECT * FROM pragma_table_info(?)", ("dino_" + table,))}
-    if not columns:
-        if optional:
-            return set()
-        
-        raise InputError(f"Missing DINO source file {table}.din")
-    missing = set(required) - columns
-    
-    if missing:
-        raise InputError(f"{table}.din is missing required columns: {', '.join(sorted(missing))}")
-    
-    return columns
-
-
-def _rows(database: sqlite3.Connection, table: str) -> Iterator[tuple[int, Row]]:
-    cursor = database.execute(f'SELECT rowid, * FROM "dino_{table}"')
-    
-    names = [column[0].upper() for column in cursor.description[1:]]
-    for rowid, *values in cursor:
-        yield rowid, dict(zip(names, values))
-
-
-def _required(row: Mapping[str, object], name: str, context: str) -> str:
-    value = row.get(name)
-    
-    if not isinstance(value, str) or not value.strip():
-        raise InputError(f"{context}: {name} is required")
-    
-    return value
-
-
-def _optional(row: Mapping[str, object], name: str) -> str | None:
-    value = row.get(name)
-    return value if isinstance(value, str) and value.strip() else None
-
-
-def _source_key(row: Mapping[str, object], names: tuple[str, ...], context: str) -> SourceKey:
-    return tuple(_required(row, name, context) for name in names)
 
 
 def _coordinates(row: Mapping[str, object], x_name: str, y_name: str, context: str) -> tuple[float, float] | None:
