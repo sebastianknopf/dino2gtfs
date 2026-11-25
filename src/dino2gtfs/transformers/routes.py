@@ -56,7 +56,7 @@ def _mode_mapping(settings: Mapping[str, Any]) -> dict[str, int]:
 
 
 class RoutesTransformer(TransformerBase):
-    """Consolidate line variants by LINE_NAME and resolved GTFS mode."""
+    """Consolidate lines by global ID or by LINE_NAME and resolved GTFS mode."""
 
     def initialize(self, database: sqlite3.Connection, settings: Mapping[str, Any]) -> None:
         database.execute(
@@ -117,7 +117,7 @@ class RoutesTransformer(TransformerBase):
             agency_mappings.setdefault((version, code), set()).add(identifier)
 
         existing_ids = {row[0] for row in database.execute("SELECT route_id FROM gtfs_routes")}
-        routes: dict[SourceKey, tuple[str, Row, str, str | None]] = {}
+        routes: dict[SourceKey, tuple[str, Row, str, str | None, str]] = {}
         identifiers: dict[str, str] = {}
         global_ids: dict[str, str] = {}
         mappings: dict[SourceKey, tuple[SourceKey, str]] = {}
@@ -152,12 +152,17 @@ class RoutesTransformer(TransformerBase):
                 )
             
             virtual = {"route_type": str(route_type)}
-            identity = self.fingerprint_components({"line": row, "gtfs": virtual}, context)
+            name = _optional(row, "LINE_NAME")
+            if name is None:
+                raise InputError(f"LINE_NAME missing in {context}")
+
             global_id = _optional(row, "GLOBAL_ID")
             if mode == "global":
                 global_id = _required(row, "GLOBAL_ID", context)
-                identifier = f"route:{global_id}:{code}:{route_type}"
+                identity = (global_id,)
+                identifier = global_id
             else:
+                identity = self.fingerprint_components({"line": row, "gtfs": virtual}, context)
                 assert template is not None
                 identifier = self.render_id(
                     template, {"line": row}, context, virtual, optional_fields=(("line", "OP_CODE"),)
@@ -165,7 +170,7 @@ class RoutesTransformer(TransformerBase):
 
             values = self.apply_configuration({
                 "route_id": identifier, "agency_id": agency_id,
-                "route_short_name": _optional(row, "LINE_NAME"), "route_long_name": None,
+                "route_short_name": name, "route_long_name": None,
                 "route_type": route_type,
             }, defaults, overrides)
             
@@ -174,19 +179,23 @@ class RoutesTransformer(TransformerBase):
                     f"conflicting gtfs_routes source identity: {identifier!r} ({mappings[key][1]} and {context})"
                 )
 
-            routes[identity] = (identifier, values, context, global_id)
+            previous = routes.get(identity)
+            if mode == "global" and previous is not None and previous[4] != name:
+                LOGGER.warning(
+                    "%s: LINE_NAME %r differs from %r in %s for GLOBAL_ID %r; using the last line.din entry",
+                    context, name, previous[4], previous[2], global_id,
+                )
+
+            routes[identity] = (identifier, values, context, global_id, name)
             mappings.setdefault(key, (identity, context))
 
-        for identifier, values, context, global_id in routes.values():
+        for identifier, values, context, global_id, _ in routes.values():
             if identifier in existing_ids:
                 raise CollisionError(f"identity collision in gtfs_routes: {identifier!r} (existing route and {context})")
 
-            if global_id is not None:
+            if mode == "template" and global_id is not None:
                 if global_id in global_ids:
                     message = f"global ID collision in gtfs_routes: {global_id!r} ({global_ids[global_id]} and {context})"
-                    if mode == "global":
-                        raise CollisionError(message)
-                    
                     LOGGER.warning("%s", message)
                 else:
                     global_ids[global_id] = context
@@ -202,7 +211,7 @@ class RoutesTransformer(TransformerBase):
 
         self.insert_with_configuration(
             database, "routes", ("route_id", "agency_id", "route_short_name", "route_long_name", "route_type"),
-            (values for _, values, _, _ in routes.values()), defaults, overrides,
+            (values for _, values, _, _, _ in routes.values()), defaults, overrides,
         )
         
         database.executemany(

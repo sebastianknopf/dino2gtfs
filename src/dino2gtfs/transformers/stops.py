@@ -138,8 +138,7 @@ class StopsTransformer(TransformerBase):
     def _identifier(
         self, mode: str, template: IdTemplate | None, sources: Mapping[str, Mapping[str, object]], context: str
     ) -> str:
-        components = self.fingerprint_components(sources, context)
-        kind = components[0]
+        kind = "platform" if "stop_point" in sources else "station"
         source = sources["stop_point"] if kind == "platform" else sources["stop"]
         if mode == "global":
             return _required(source, "GLOBAL_ID", context)
@@ -178,6 +177,7 @@ class StopsTransformer(TransformerBase):
         global_ids: dict[tuple[str, str], dict[SourceKey, str]] = {}
         
         stations: dict[str, tuple[Row, str, str]] = {}
+        station_sources: dict[SourceKey, tuple[Row, str, str]] = {}
         station_versions: dict[str, str] = {}
         global_stations: dict[str, tuple[Row, str, str]] = {}
         point_ids: dict[SourceKey, str] = {}
@@ -185,7 +185,21 @@ class StopsTransformer(TransformerBase):
         point_mappings: dict[SourceKey, str] = {}
         point_aliases: dict[SourceKey, SourceKey] = {}
 
+        def station_for(row: Row) -> tuple[Row, str, str] | None:
+            stop_nr = _optional(row, "STOP_NR")
+            if stop_nr is None:
+                return None
+            
+            version = _optional(row, "VERSION")
+            if mode == "global" and version is not None:
+                return station_sources.get((version, stop_nr), stations.get(stop_nr))
+            
+            return stations.get(stop_nr)
+
         def check_global_id(row: Row, key: SourceKey, kind: str, context: str) -> None:
+            if mode != "template":
+                return
+            
             global_id = _optional(row, "GLOBAL_ID")
             if global_id is None:
                 return
@@ -196,8 +210,6 @@ class StopsTransformer(TransformerBase):
                 if identities:
                     prior = next(iter(identities.values()))
                     message = f"global ID collision in gtfs_stops: {global_id!r} ({prior} and {context})"
-                    if mode == "global":
-                        raise CollisionError(message)
                     LOGGER.warning("%s", message)
                 
                 identities[identity] = context
@@ -241,17 +253,21 @@ class StopsTransformer(TransformerBase):
             
             context = f"stop.din row {rowid}"
             key = _source_key(row, ("VERSION", "STOP_NR"), context)
-            if key[1] in stations:
+            if mode == "template" and key[1] in stations:
                 station_mappings[key] = stations[key[1]][1]
                 continue
             
-            station_versions[key[1]] = key[0]
+            station_versions.setdefault(key[1], key[0])
             check_global_id(row, key, "station", context)
             
             identifier = self._identifier(mode, template, {"stop": row}, context)
+            if key in station_mappings and station_mappings[key] != identifier:
+                raise CollisionError(f"{context}: conflicting map_stop_2_stops identity for {key!r}")
+            
             station_mappings[key] = identifier
             if reuse_global_id(identifier, "station", context):
-                stations[key[1]] = global_stations[identifier]
+                station_sources[key] = global_stations[identifier]
+                stations.setdefault(key[1], global_stations[identifier])
                 continue
             
             name = self.apply_configuration({"stop_name": _optional(row, "STOP_NAME")}, defaults, overrides)["stop_name"]
@@ -265,9 +281,11 @@ class StopsTransformer(TransformerBase):
                 "stop_lat": lat, "stop_lon": lon, "location_type": 1, "parent_station": None, "stop_access": None,
             }, context)
             
-            stations[key[1]] = (row, identifier, context)
+            station = (row, identifier, context)
+            station_sources[key] = station
+            stations.setdefault(key[1], station)
             if mode == "global":
-                global_stations[identifier] = stations[key[1]]
+                global_stations[identifier] = station
 
         areas: dict[SourceKey, tuple[Row, str]] = {}
         if area_columns:
@@ -284,46 +302,58 @@ class StopsTransformer(TransformerBase):
 
         if point_columns:
             preferred_points: dict[tuple[str, str], Row] = {}
-            preferred_global_ids: dict[tuple[str, str], Row] = {}
+            preferred_global_ids: dict[SourceKey, Row] = {}
             for _, row in _rows(database, "stop_point"):
                 area_nr = _optional(row, "STOP_AREA_NR")
                 stop_nr = _optional(row, "STOP_NR")
                 point_nr = _optional(row, "STOPPING_POINT_NR")
                 global_id = _optional(row, "GLOBAL_ID")
                 if area_nr is not None and area_nr != "0" and stop_nr is not None and stop_nr in stations:
-                    if point_nr is not None:
+                    if mode == "template" and point_nr is not None:
                         preferred_points.setdefault((stop_nr, point_nr), row)
                     
                     if global_id is not None:
-                        preferred_global_ids.setdefault((stop_nr, global_id), row)
+                        global_key = (global_id,) if mode == "global" else (stop_nr, global_id)
+                        preferred_global_ids.setdefault(global_key, row)
 
             for rowid, row in _rows(database, "stop_point"):
                 stop_nr = _optional(row, "STOP_NR")
-                if stop_nr not in stations:
+                station = station_for(row)
+                if station is None:
                     continue
+                
                 context = f"stop_point.din row {rowid}"
                 key = _source_key(row, ("VERSION", "STOP_NR", "STOP_AREA_NR", "STOPPING_POINT_NR"), context)
+                identity = (_required(row, "GLOBAL_ID", context),) if mode == "global" else key[1:]
+                if mode == "global":
+                    if key in point_mappings and point_mappings[key] != identity[0]:
+                        raise CollisionError(f"{context}: conflicting map_stop_point_2_stops identity for {key!r}")
+                    
+                    point_mappings[key] = identity[0]
+
                 if key[2] == "0":
-                    preferred = preferred_points.get((stop_nr, key[3]))
+                    preferred = preferred_points.get((stop_nr, key[3])) if mode == "template" else None
                     global_id = _optional(row, "GLOBAL_ID")
                     if preferred is None and global_id is not None:
-                        preferred = preferred_global_ids.get((stop_nr, global_id))
+                        global_key = (global_id,) if mode == "global" else (key[1], global_id)
+                        preferred = preferred_global_ids.get(global_key)
                     
                     if preferred is not None:
-                        point_aliases[key] = _source_key(
-                            preferred, ("STOP_NR", "STOP_AREA_NR", "STOPPING_POINT_NR"), context
-                        )
+                        if mode == "template":
+                            point_aliases[key] = _source_key(
+                                preferred, ("VERSION", "STOP_NR", "STOP_AREA_NR", "STOPPING_POINT_NR"), context
+                            )
                         
                         continue
 
                 if key[0] == station_versions[key[1]]:
                     check_global_id(row, key, "platform", context)
                 
-                if key[1:] in point_ids:
-                    point_mappings[key] = point_ids[key[1:]]
+                if identity in point_ids:
+                    point_mappings[key] = point_ids[identity]
                     continue
                 
-                parent, parent_id, parent_context = stations[key[1]]
+                parent, parent_id, parent_context = station
                 if results[parent_id][0]["location_type"] != 1:
                     raise ConfigurationError(f"{context}: parent station must have location_type 1")
                 
@@ -332,7 +362,7 @@ class StopsTransformer(TransformerBase):
                 
                 area = areas.get(key[:3])
                 identifier = self._identifier(mode, template, {"stop": parent, "stop_point": row}, context)
-                point_ids[key[1:]] = identifier
+                point_ids[identity] = identifier
                 point_mappings[key] = identifier
                 if reuse_global_id(identifier, "platform", context):
                     continue
@@ -368,7 +398,7 @@ class StopsTransformer(TransformerBase):
 
         fields = ("stop_id", "stop_name", "stop_code", "stop_lat", "stop_lon", "location_type", "parent_station", "stop_access")
         for key, preferred_key in point_aliases.items():
-            point_mappings[key] = point_ids[preferred_key]
+            point_mappings[key] = point_mappings[preferred_key]
 
         self.insert_with_configuration(
             database, "stops", fields, (values for values, _ in results.values()), defaults, overrides

@@ -33,7 +33,7 @@ def test_end_to_end_exports_agency(tmp_path):
         stops = archive.read("stops.txt").splitlines()
         assert len(stops) == 2
         assert stops[1].startswith(b"S1,")
-        assert b"route:R:1:0,agency:1,42,,," in archive.read("routes.txt")
+        assert b"R,agency:1,42,,," in archive.read("routes.txt")
 
 def test_default_conversion_retains_import_for_debugging(tmp_path):
     source = tmp_path / "input.zip"

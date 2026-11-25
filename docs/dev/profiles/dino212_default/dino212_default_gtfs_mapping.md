@@ -77,7 +77,7 @@ The templates below are **configurable defaults**. Where a DINO source relation 
 | `agency.txt` | `agency_id` | Not documented | `agency:{operator.OP_CODE}`; operator.din `OP_CODE`, external agency assignment |
 | `stops.txt` station | `stop_id` | `{stop.GLOBAL_ID}` | `stop:{gtfs.stop_kind}:{gtfs.fingerprint}`; stop number |
 | `stops.txt` boarding stop | `stop_id` | `{stop_point.GLOBAL_ID}` | `stop:{gtfs.stop_kind}:{gtfs.fingerprint}`; stop, area and stopping-point numbers |
-| `routes.txt` | `route_id` | `route:{line.GLOBAL_ID}:{line.OP_CODE}:{gtfs.route_type}` | `route:{line.LINE_NR}:{line.OP_CODE}:{gtfs.route_type}`; variant dimensions only if required by route-level semantics |
+| `routes.txt` | `route_id` | `{line.GLOBAL_ID}` (verbatim) | `route:{line.LINE_NR}:{line.OP_CODE}:{gtfs.route_type}`; variant dimensions only if required by route-level semantics |
 | `trips.txt` | `trip_id` | `trip:{trip.GLOBAL_ID}:{gtfs.split_key}` | `trip:{trip.VERSION}:{trip.LINE_NR}:{trip.STR_LINE_VAR}:{trip.LINE_DIR_NR}:{trip.TRIP_ID}:{gtfs.split_key}` |
 | `stop_times.txt` | (`trip_id`,`stop_sequence`) | No row-level global ID | `{gtfs.trip_id}:{gtfs.stop_sequence}`; source `route.LINE_CONSEC_NR`, remapped after omitted stops |
 | `calendar.txt` | `service_id` | Not documented | `service:{gtfs.service_fingerprint}` from exact active-date set |

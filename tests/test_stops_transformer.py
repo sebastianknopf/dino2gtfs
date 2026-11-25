@@ -57,9 +57,9 @@ def test_only_responsible_stations_and_their_points_are_transformed(settings, ca
         ).fetchone()
         assert station[1] == "Selected"
         assert point == ("Selected", 52.1, 13.1, station[0])
-        assert db.execute("SELECT count(*) FROM gtfs_stops").fetchone() == (2,)
+        assert db.execute("SELECT count(*) FROM gtfs_stops").fetchone() == ((3,) if settings is GLOBAL else (2,))
         assert db.execute("SELECT * FROM map_stop_2_stops ORDER BY VERSION").fetchall() == [
-            ("2", "1", station[0]), ("3", "1", station[0]),
+            ("2", "1", station[0]), ("3", "1", "S2" if settings is GLOBAL else station[0]),
         ]
         assert db.execute(
             "SELECT m.VERSION, m.STOP_ID, m.STOP_AREA_ID, m.STOPPING_POINT_NR, s.location_type "
@@ -162,8 +162,8 @@ def test_template_mode_supports_generic_fingerprint_and_source_field():
         assert platform[1] == station[0]
 
 
-@pytest.mark.parametrize("settings", [GLOBAL, TEMPLATE])
-def test_deduplicates_by_non_version_keys_and_keeps_first(caplog, settings):
+def test_deduplicates_by_non_version_keys_and_keeps_first(caplog):
+    settings = TEMPLATE
     with temporary_database() as db:
         create_table(db, "stop", ["VERSION", "STOP_NR", "STOP_NAME", "GLOBAL_ID", "STOP_POS_X", "STOP_POS_Y"], [
             ("1", "10", "First", "S", "13", "52"),
@@ -187,9 +187,6 @@ def test_deduplicates_by_non_version_keys_and_keeps_first(caplog, settings):
         assert [(point[1], point[2], point[3], point[4]) for point in points] == [
             ("Different area", 52, 13, station[0]), ("First point", 52, 13, station[0]),
         ]
-        if settings is GLOBAL:
-            assert station[0] == "S"
-            assert {point[0] for point in points} == {"P", "Q"}
         assert db.execute("SELECT * FROM map_stop_2_stops ORDER BY VERSION").fetchall() == [
             ("1", "10", station[0]), ("2", "10", station[0]),
         ]
@@ -262,7 +259,7 @@ def test_prefers_nonzero_area_for_same_global_id_and_station(caplog, settings, z
 
 
 @pytest.mark.parametrize("settings", [GLOBAL, TEMPLATE])
-def test_zero_area_global_id_collision_between_stations_is_not_suppressed(caplog, settings):
+def test_zero_area_global_id_reuse_between_stations_depends_on_mode(caplog, settings):
     with temporary_database() as db:
         create_table(db, "stop", ["VERSION", "STOP_NR", "STOP_NAME", "GLOBAL_ID"], [
             ("1", "1", "First", "S"), ("1", "2", "Second", "T"),
@@ -271,8 +268,11 @@ def test_zero_area_global_id_collision_between_stations_is_not_suppressed(caplog
             ("1", "1", "0", "1", "P"), ("1", "2", "2", "3", "P"),
         ])
         if settings is GLOBAL:
-            with pytest.raises(CollisionError, match="P.*stop_point.din row 1.*stop_point.din row 2"):
-                transform(db, settings)
+            transform(db, settings)
+            assert db.execute("SELECT stop_id, parent_station FROM gtfs_stops WHERE location_type = 0").fetchall() == [
+                ("P", "T"),
+            ]
+            assert db.execute("SELECT gtfs_id FROM map_stop_point_2_stops").fetchall() == [("P",), ("P",)]
         else:
             with caplog.at_level(logging.WARNING):
                 transform(db, settings)
@@ -311,27 +311,90 @@ def test_station_coordinate_fallback_uses_station_version_crs():
         assert parent == "S"
 
 
-def test_global_mode_deduplicates_same_global_id_across_versions():
+@pytest.mark.parametrize("second_version", ["1", "2"])
+def test_global_mode_deduplicates_same_global_id_across_versions(second_version):
     with temporary_database() as db:
         create_table(db, "stop", ["VERSION", "STOP_NR", "STOP_NAME", "GLOBAL_ID"], [
-            ("1", "1", "First", "S"), ("2", "2", "Second", "S"),
+            ("1", "1", "First", "S"), (second_version, "2", "Second", "S"),
         ])
         create_table(db, "stop_point", ["VERSION", "STOP_NR", "STOP_AREA_NR", "STOPPING_POINT_NR", "GLOBAL_ID"], [
-            ("1", "1", "1", "1", "P"), ("2", "2", "1", "1", "P"),
-            ("2", "2", "1", "2", "Q"),
+            ("1", "1", "1", "1", "P"), (second_version, "2", "1", "1", "P"),
+            (second_version, "2", "1", "2", "Q"),
         ])
         transform(db, GLOBAL)
         assert db.execute(
             "SELECT stop_id, stop_name, parent_station FROM gtfs_stops ORDER BY stop_id"
         ).fetchall() == [("P", "First", "S"), ("Q", "First", "S"), ("S", "First", None)]
         assert db.execute("SELECT * FROM map_stop_2_stops ORDER BY VERSION").fetchall() == [
-            ("1", "1", "S"), ("2", "2", "S"),
+            ("1", "1", "S"), (second_version, "2", "S"),
         ]
         assert db.execute(
             "SELECT * FROM map_stop_point_2_stops ORDER BY VERSION, STOPPING_POINT_NR"
         ).fetchall() == [
-            ("1", "1", "1", "1", "P"), ("2", "2", "1", "1", "P"), ("2", "2", "1", "2", "Q"),
+            ("1", "1", "1", "1", "P"), (second_version, "2", "1", "1", "P"),
+            (second_version, "2", "1", "2", "Q"),
         ]
+
+
+def test_global_identity_keeps_different_ids_for_same_source_numbers_and_parent_versions():
+    with temporary_database() as db:
+        create_table(db, "stop", ["VERSION", "STOP_NR", "STOP_NAME", "GLOBAL_ID", "STOP_POS_X", "STOP_POS_Y"], [
+            ("1", "10", "First", "S", "13", "52"), ("2", "10", "Second", "T", "14", "53"),
+        ])
+        create_table(db, "stop_point", ["VERSION", "STOP_NR", "STOP_AREA_NR", "STOPPING_POINT_NR", "GLOBAL_ID"], [
+            ("1", "10", "1", "1", "P"), ("2", "10", "1", "1", "Q"),
+        ])
+        transform(db, GLOBAL)
+        assert db.execute(
+            "SELECT stop_id, stop_name, stop_lat, stop_lon, parent_station FROM gtfs_stops ORDER BY stop_id"
+        ).fetchall() == [
+            ("P", "First", 52, 13, "S"), ("Q", "Second", 53, 14, "T"),
+            ("S", "First", 52, 13, None), ("T", "Second", 53, 14, None),
+        ]
+        assert db.execute("SELECT * FROM map_stop_2_stops ORDER BY VERSION").fetchall() == [
+            ("1", "10", "S"), ("2", "10", "T"),
+        ]
+        assert db.execute("SELECT * FROM map_stop_point_2_stops ORDER BY VERSION").fetchall() == [
+            ("1", "10", "1", "1", "P"), ("2", "10", "1", "1", "Q"),
+        ]
+
+
+def test_global_identity_does_not_replace_zero_area_point_with_different_global_id():
+    with temporary_database() as db:
+        create_table(db, "stop", ["VERSION", "STOP_NR", "STOP_NAME", "GLOBAL_ID"], [("1", "1", "Town", "S")])
+        create_table(db, "stop_point", ["VERSION", "STOP_NR", "STOP_AREA_NR", "STOPPING_POINT_NR", "GLOBAL_ID"], [
+            ("1", "1", "0", "1", "P"), ("1", "1", "2", "1", "Q"),
+        ])
+        transform(db, GLOBAL)
+        assert db.execute("SELECT stop_id FROM gtfs_stops WHERE location_type = 0 ORDER BY stop_id").fetchall() == [
+            ("P",), ("Q",),
+        ]
+        assert db.execute("SELECT gtfs_id FROM map_stop_point_2_stops ORDER BY STOP_AREA_ID").fetchall() == [
+            ("P",), ("Q",),
+        ]
+
+
+@pytest.mark.parametrize("target", ["station", "platform", "zero-area"])
+def test_global_identity_rejects_ambiguous_source_mapping(target):
+    with temporary_database() as db:
+        stations = [("1", "1", "Town", "S")]
+        if target == "station":
+            stations.append(("1", "1", "Other", "T"))
+        create_table(db, "stop", ["VERSION", "STOP_NR", "STOP_NAME", "GLOBAL_ID"], stations)
+        if target == "platform":
+            create_table(db, "stop_point", ["VERSION", "STOP_NR", "STOP_AREA_NR", "STOPPING_POINT_NR", "GLOBAL_ID"], [
+                ("1", "1", "1", "1", "P"), ("1", "1", "1", "1", "Q"),
+            ])
+        elif target == "zero-area":
+            create_table(db, "stop_point", ["VERSION", "STOP_NR", "STOP_AREA_NR", "STOPPING_POINT_NR", "GLOBAL_ID"], [
+                ("1", "1", "0", "1", "P"), ("1", "1", "0", "1", "Q"),
+                ("1", "1", "1", "2", "P"), ("1", "1", "2", "3", "Q"),
+            ])
+        with pytest.raises(CollisionError, match="conflicting map_stop"):
+            transform(db, GLOBAL)
+        assert db.execute("SELECT * FROM gtfs_stops").fetchall() == []
+        assert db.execute("SELECT * FROM map_stop_2_stops").fetchall() == []
+        assert db.execute("SELECT * FROM map_stop_point_2_stops").fetchall() == []
 
 
 @pytest.mark.parametrize("settings", [GLOBAL, TEMPLATE])
@@ -358,8 +421,8 @@ def test_point_collision_detection_checks_versions_of_skipped_duplicates(setting
             ("2", "1", "1", "1", "P"), ("1", "1", "1", "1", "P"), ("1", "1", "1", "2", "P"),
         ])
         if settings is GLOBAL:
-            with pytest.raises(CollisionError, match="P.*stop_point.din row 2.*stop_point.din row 3"):
-                transform(db, settings)
+            transform(db, settings)
+            assert db.execute("SELECT stop_id FROM gtfs_stops WHERE location_type = 0").fetchall() == [("P",)]
         else:
             with caplog.at_level(logging.WARNING):
                 transform(db, settings)
@@ -397,8 +460,8 @@ def test_point_collision_uses_source_station_version_after_global_alias(settings
             ("2", "2", "1", "1", "P"), ("2", "2", "1", "2", "P"),
         ])
         if settings is GLOBAL:
-            with pytest.raises(CollisionError, match="P.*stop_point.din row 1.*stop_point.din row 2"):
-                transform(db, settings)
+            transform(db, settings)
+            assert db.execute("SELECT gtfs_id FROM map_stop_point_2_stops").fetchall() == [("P",), ("P",)]
         else:
             with caplog.at_level(logging.WARNING):
                 transform(db, settings)
@@ -569,14 +632,18 @@ def test_invalid_coordinate_configuration_or_values_fail(mode, coords, crs, erro
         assert db.execute("SELECT * FROM gtfs_stops").fetchall() == []
 
 
-def test_conflicting_global_id_fails():
+def test_same_global_id_merges_stations_with_different_source_numbers():
     with temporary_database() as db:
         create_table(db, "stop", ["VERSION", "STOP_NR", "STOP_NAME", "GLOBAL_ID"], [
             ("1", "1", "First", "S"), ("1", "2", "Second", "S"),
         ])
-        with pytest.raises(CollisionError, match="S.*stop.din row 1.*stop.din row 2"):
-            transform(db, GLOBAL)
-        assert db.execute("SELECT * FROM gtfs_stops").fetchall() == []
+        transform(db, GLOBAL)
+        assert db.execute("SELECT stop_id, stop_name FROM gtfs_stops").fetchall() == [("S", "First")]
+        assert db.execute("SELECT * FROM map_stop_2_stops ORDER BY STOP_ID").fetchall() == [
+            ("1", "1", "S"), ("1", "2", "S"),
+        ]
+
+
 def test_global_ids_are_raw_and_cross_kind_collisions_fail():
     with temporary_database() as db:
         create_table(db, "stop", ["VERSION", "STOP_NR", "STOP_NAME", "GLOBAL_ID"], [
@@ -596,7 +663,7 @@ def test_global_ids_are_raw_and_cross_kind_collisions_fail():
         create_table(db, "stop_point", ["VERSION", "STOP_NR", "STOP_AREA_NR", "STOPPING_POINT_NR", "GLOBAL_ID"], [
             ("1", "1", "1", "1", "same"),
         ])
-        with pytest.raises(CollisionError, match="same.*stop.din row 1.*stop_point.din row 1"):
+        with pytest.raises(InputError, match="same.*stop.din row 1.*stop_point.din row 1"):
             transform(db, GLOBAL)
         assert db.execute("SELECT * FROM gtfs_stops").fetchall() == []
 

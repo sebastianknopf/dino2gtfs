@@ -45,7 +45,7 @@ def transform(db, settings=SETTINGS):
 
 
 @pytest.mark.parametrize("mode,identifier", [
-    ("template", "route:2:421:3"), ("global", "route:G:A:3"),
+    ("template", "route:2:421:3"), ("global", "G"),
 ])
 def test_consolidates_variants_and_versions_and_maps_every_source(db, caplog, mode, identifier):
     create_lines(db, [
@@ -66,9 +66,8 @@ def test_consolidates_variants_and_versions_and_maps_every_source(db, caplog, mo
     assert not any(record.levelno >= logging.WARNING for record in caplog.records)
 
 
-@pytest.mark.parametrize("mode", ["template", "global"])
 @pytest.mark.parametrize("override_name", [False, True])
-def test_merge_identity_uses_source_name_and_final_mode_not_line_number(db, mode, override_name):
+def test_merge_identity_uses_source_name_and_final_mode_not_line_number(db, override_name):
     create_lines(db, [
         ("1", "42", "a", "1", "A", "Blue", "10", "old"),
         ("1", "42", "b", "1", "A", "Red", "10", "red"),
@@ -78,7 +77,6 @@ def test_merge_identity_uses_source_name_and_final_mode_not_line_number(db, mode
     settings = {
         **SETTINGS,
         "mapping": {"mode_of_transport": {"10": 0, "11": 0}},
-        "ids": {"routes": {**SETTINGS["ids"]["routes"], "mode": mode}},
     }
     if override_name:
         settings["overrides"] = {"routes": {"route_short_name": "Forced"}}
@@ -91,21 +89,16 @@ def test_merge_identity_uses_source_name_and_final_mode_not_line_number(db, mode
     assert identifiers["a"] == identifiers["c"]
     assert len({identifiers["a"], identifiers["b"], identifiers["d"]}) == 3
     assert db.execute("SELECT count(*) FROM map_line_2_routes").fetchone() == (4,)
-    if mode == "template":
-        assert identifiers["a"] == "route:4:Blue1:0"
-    else:
-        assert identifiers["a"] == "route:blue:A:0"
+    assert identifiers["a"] == "route:4:Blue1:0"
 
 
-@pytest.mark.parametrize("mode", ["template", "global"])
-def test_operators_merge_but_different_mapped_modes_split_routes(db, mode):
+def test_operators_merge_but_different_mapped_modes_split_routes(db):
     create_lines(db, [
         ("1", "42", "a", "1", "A", "42", "10", "G"),
         ("1", "42", "b", "1", "B", "42", "10", "H"),
         ("1", "42", "c", "1", "A", "42", "20", "I"),
     ])
-    settings = {**SETTINGS, "ids": {"routes": {**SETTINGS["ids"]["routes"], "mode": mode}}}
-    transform(db, settings)
+    transform(db)
     assert db.execute("SELECT agency_id, route_type FROM gtfs_routes ORDER BY agency_id, route_type").fetchall() == [
         ("agency:A", 2), ("agency:B", 0),
     ]
@@ -124,7 +117,7 @@ def test_last_operator_wins_across_versions_and_all_sources_map_to_one_route(db,
     ])
     settings = {**SETTINGS, "ids": {"routes": {**SETTINGS["ids"]["routes"], "mode": mode}}}
     transform(db, settings)
-    identifier = f"route:G:{last_code}:3" if mode == "global" else "route:4:Last1:3"
+    identifier = "G" if mode == "global" else "route:4:Last1:3"
     assert db.execute("SELECT route_id, agency_id, route_short_name FROM gtfs_routes").fetchall() == [
         (identifier, "agency:B" if last_code else None, "Last"),
     ]
@@ -190,7 +183,7 @@ def test_route_configuration_precedence_is_used_for_names_modes_ids_and_mappings
         settings["overrides"] = {"routes": {"route_type": 3, "route_short_name": "Forced", "route_desc": None}}
     transform(db, settings)
     route_type = 3 if override else 2
-    identifier = f"route:G:A:{route_type}" if mode == "global" else f"route:6:Source1:{route_type}"
+    identifier = "G" if mode == "global" else f"route:6:Source1:{route_type}"
     assert db.execute("SELECT route_id, route_short_name, route_type, route_desc FROM gtfs_routes").fetchall() == [
         (identifier, "Forced" if override else "Source", route_type, None if override else "Description")
     ]
@@ -238,7 +231,7 @@ def test_agency_assignment_requires_line_operator_and_exact_version(db, version,
 
 @pytest.mark.parametrize("code", [None, "", "   ", "missing-column"])
 @pytest.mark.parametrize("mode,template,identifier", [
-    ("global", None, "route:G::3"),
+    ("global", None, "G"),
     ("template", "route:{gtfs.canonical}", "route:2:421:3"),
     ("template", "route:{line.LINE_NR}:{line.OP_CODE}:{gtfs.route_type}", "route:42::3"),
 ])
@@ -304,52 +297,77 @@ def test_conflicts_fail_before_inserting_any_route_or_mapping(db, template, seco
     assert db.execute("SELECT * FROM map_line_2_routes").fetchall() == []
 
 
-def test_global_id_collision_between_distinct_lines_is_fatal(db):
+@pytest.mark.parametrize("override_name", [False, True])
+def test_global_identity_merges_different_names_modes_and_operators_and_warns(db, caplog, override_name):
     create_lines(db, [
-        ("1", "42", "a", "1", "A", "42", "", "G"),
-        ("1", "43", "a", "1", "A", "43", "", "G"),
+        ("2", "42", "a", "1", "A", "First", "10", "G"),
+        ("1", "43", "b", "2", "B", "Last", "20", "G"),
+        ("1", "43", "b", "2", "B", "Last", "20", "G"),
     ])
-    with pytest.raises(CollisionError, match="global ID collision in gtfs_routes.*'G'.*line.din row 1 and line.din row 2"):
-        transform(db, {**SETTINGS, "ids": {"routes": {"mode": "global"}}})
+    settings = {**SETTINGS, "ids": {"routes": {"mode": "global"}}}
+    if override_name:
+        settings["overrides"] = {"routes": {"route_short_name": "Forced"}}
+    transform(db, settings)
+    assert db.execute("SELECT route_id, agency_id, route_short_name, route_type FROM gtfs_routes").fetchall() == [
+        ("G", "agency:B", "Forced" if override_name else "Last", 2),
+    ]
+    assert db.execute("SELECT * FROM map_line_2_routes ORDER BY VERSION").fetchall() == [
+        ("1", "43", "b", "2", "G"), ("2", "42", "a", "1", "G"),
+    ]
+    warnings = [record.message for record in caplog.records if "LINE_NAME" in record.message]
+    assert len(warnings) == 1
+    assert all(text in warnings[0] for text in ("line.din row 1", "line.din row 2", "First", "Last", "GLOBAL_ID", "'G'"))
+    assert not any("global ID collision" in record.message for record in caplog.records)
 
 
-@pytest.mark.parametrize("mode", ["global", "template"])
+def test_global_identity_keeps_different_global_ids_with_same_name_and_mode(db, caplog):
+    create_lines(db, [
+        ("1", "42", "a", "1", "A", "Same", "", "G"),
+        ("2", "42", "a", "1", "A", "Same", "", "H"),
+    ])
+    transform(db, {**SETTINGS, "ids": {"routes": {"mode": "global"}}})
+    assert db.execute("SELECT route_id FROM gtfs_routes ORDER BY route_id").fetchall() == [
+        ("G",), ("H",),
+    ]
+    assert db.execute("SELECT gtfs_id FROM map_line_2_routes ORDER BY VERSION").fetchall() == [
+        ("G",), ("H",),
+    ]
+    assert not any(record.levelno >= logging.WARNING for record in caplog.records)
+
+
+@pytest.mark.parametrize("global_id", ["de:line:42", "  de:line:42  "])
+def test_global_route_id_is_used_verbatim_in_routes_and_mappings(db, global_id):
+    create_lines(db, [("1", "42", "a", "1", "A", "42", "20", global_id)])
+    transform(db, {**SETTINGS, "ids": {"routes": {"mode": "global"}}})
+    assert db.execute("SELECT route_id FROM gtfs_routes").fetchall() == [(global_id,)]
+    assert db.execute("SELECT gtfs_id FROM map_line_2_routes").fetchall() == [(global_id,)]
+
+
 @pytest.mark.parametrize("line,code,mot", [
     ("43", "A", ""), ("43", "B", ""), ("42", "A", "20"),
 ])
-def test_retained_route_global_id_collisions_include_operator_and_mode_splits(db, caplog, mode, line, code, mot):
+def test_retained_route_global_id_collisions_include_operator_and_mode_splits(db, caplog, line, code, mot):
     create_lines(db, [
         ("1", "42", "a", "1", "A", "Last", "", "old"),
         ("1", line, "b", "1", code, "Other", mot, "G"),
         ("2", "42", "a", "1", "A", "Last", "", "G"),
     ])
-    settings = {**SETTINGS, "ids": {"routes": {**SETTINGS["ids"]["routes"], "mode": mode}}}
-    if mode == "global":
-        with pytest.raises(CollisionError, match="global ID collision in gtfs_routes.*'G'") as error:
-            transform(db, settings)
-        assert "line.din row 2" in str(error.value)
-        assert "line.din row 3" in str(error.value)
-        assert "line.din row 1" not in str(error.value)
-        assert db.execute("SELECT * FROM gtfs_routes").fetchall() == []
-        assert db.execute("SELECT * FROM map_line_2_routes").fetchall() == []
-    else:
-        transform(db, settings)
-        warnings = [record.message for record in caplog.records if "global ID collision" in record.message]
-        assert len(warnings) == 1
-        assert "gtfs_routes" in warnings[0] and "'G'" in warnings[0]
-        assert "line.din row 2" in warnings[0] and "line.din row 3" in warnings[0]
-        assert "line.din row 1" not in warnings[0]
-        assert db.execute("SELECT count(*) FROM gtfs_routes").fetchone() == (2,)
+    transform(db)
+    warnings = [record.message for record in caplog.records if "global ID collision" in record.message]
+    assert len(warnings) == 1
+    assert "gtfs_routes" in warnings[0] and "'G'" in warnings[0]
+    assert "line.din row 2" in warnings[0] and "line.din row 3" in warnings[0]
+    assert "line.din row 1" not in warnings[0]
+    assert db.execute("SELECT count(*) FROM gtfs_routes").fetchone() == (2,)
 
 
-@pytest.mark.parametrize("mode", ["global", "template"])
-def test_global_ids_of_replaced_line_records_are_not_checked(db, caplog, mode):
+def test_global_ids_of_replaced_line_records_are_not_checked(db, caplog):
     create_lines(db, [
         ("1", "42", "a", "1", "A", "Last", "", "G"),
         ("1", "43", "a", "1", "A", "Other", "", "G"),
         ("2", "42", "b", "2", "A", "Last", "", "final"),
     ])
-    transform(db, {**SETTINGS, "ids": {"routes": {**SETTINGS["ids"]["routes"], "mode": mode}}})
+    transform(db)
     assert db.execute("SELECT count(*) FROM gtfs_routes").fetchone() == (2,)
     assert not any(record.levelno >= logging.WARNING for record in caplog.records)
 
@@ -396,7 +414,6 @@ def test_configured_public_name_does_not_replace_missing_identity_name(db, field
 @pytest.mark.parametrize("ids,identifier", [
     ({"mode": "template", "template": "route:{gtfs.canonical}"}, "route:5:Final1:3"),
     ({"mode": "template", "template": "route:{line.VERSION}:{line.STR_LINE_VAR}"}, "route:1:c"),
-    ({"mode": "global"}, "route:final:A:3"),
 ])
 def test_last_route_wins_and_all_source_mappings_use_its_final_id(db, caplog, ids, identifier):
     create_lines(db, [
