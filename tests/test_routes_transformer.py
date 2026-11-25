@@ -10,7 +10,7 @@ from dino2gtfs.transformers.routes import RoutesTransformer
 
 SETTINGS = {
     "defaults": {"routes": {"route_type": 3}},
-    "mapping": {"mode_of_transport": {"10": 0, "20": 2}},
+    "mapping": {"mode_of_transport": {"3": 0, "0": 2}},
     "ids": {"routes": {"mode": "template", "template": "route:{gtfs.canonical}"}},
 }
 COLUMNS = ("VERSION", "LINE_NR", "STR_LINE_VAR", "LINE_DIR_NR", "OP_CODE", "LINE_NAME", "MOT_NR", "GLOBAL_ID")
@@ -30,6 +30,11 @@ def db():
         transformer = AgencyTransformer()
         transformer.initialize(database, settings)
         transformer.transform(database, settings)
+        database.execute("CREATE TABLE dino_means_of_transport_desc (VERSION TEXT, MOT_NR TEXT, TMOT_NR TEXT)")
+        database.executemany("INSERT INTO dino_means_of_transport_desc VALUES (?, ?, ?)", [
+            ("1", "10", "3"), ("1", "20", "0"), ("1", "11", "4"),
+            ("2", "10", "3"), ("2", "20", "0"), ("2", "11", "4"),
+        ])
         yield database
 
 
@@ -76,7 +81,7 @@ def test_merge_identity_uses_source_name_and_final_mode_not_line_number(db, over
     ])
     settings = {
         **SETTINGS,
-        "mapping": {"mode_of_transport": {"10": 0, "11": 0}},
+        "mapping": {"mode_of_transport": {"3": 0, "4": 0}},
     }
     if override_name:
         settings["overrides"] = {"routes": {"route_short_name": "Forced"}}
@@ -152,8 +157,69 @@ def test_fingerprint_uses_only_line_name_and_resolved_mode(db):
 
 def test_mode_mapping_accepts_yaml_integer_keys_without_a_default(db):
     create_lines(db, [("1", "42", "a", "1", "A", "42", "10", "")])
-    transform(db, {**SETTINGS, "defaults": {}, "mapping": {"mode_of_transport": {10: 0}}})
+    transform(db, {**SETTINGS, "defaults": {}, "mapping": {"mode_of_transport": {3: 0}}})
     assert db.execute("SELECT route_type FROM gtfs_routes").fetchall() == [(0,)]
+
+
+def test_transport_description_lookup_uses_line_version_and_resolved_type_for_identity(db):
+    db.execute("UPDATE dino_means_of_transport_desc SET TMOT_NR = '0' WHERE VERSION = '2' AND MOT_NR = '10'")
+    create_lines(db, [
+        ("1", "42", "a", "1", "A", "42", "10", ""),
+        ("2", "42", "a", "1", "A", "42", "10", ""),
+    ])
+    transform(db)
+    assert db.execute("SELECT route_id, route_type FROM gtfs_routes ORDER BY route_type").fetchall() == [
+        ("route:2:421:0", 0), ("route:2:421:2", 2),
+    ]
+    assert db.execute("SELECT VERSION, gtfs_id FROM map_line_2_routes ORDER BY VERSION").fetchall() == [
+        ("1", "route:2:421:0"), ("2", "route:2:421:2"),
+    ]
+
+
+@pytest.mark.parametrize("unresolved", ["missing-table", "missing-row", "wrong-version", "blank-tmot", "unmapped-tmot"])
+@pytest.mark.parametrize("has_default", [False, True])
+def test_unresolved_transport_type_uses_only_configured_fallback(db, unresolved, has_default):
+    if unresolved == "missing-table":
+        db.execute("DROP TABLE dino_means_of_transport_desc")
+    elif unresolved == "missing-row":
+        db.execute("DELETE FROM dino_means_of_transport_desc WHERE MOT_NR = '10'")
+    elif unresolved == "wrong-version":
+        db.execute("DELETE FROM dino_means_of_transport_desc WHERE VERSION = '1'")
+    else:
+        db.execute("UPDATE dino_means_of_transport_desc SET TMOT_NR = ? WHERE MOT_NR = '10'",
+                   ("   " if unresolved == "blank-tmot" else "unknown",))
+    create_lines(db, [("1", "42", "a", "1", "A", "42", "10", "")])
+    settings = {**SETTINGS, "mapping": {"mode_of_transport": {**SETTINGS["mapping"]["mode_of_transport"], "10": 7}}}
+    if not has_default:
+        settings["defaults"] = {}
+        with pytest.raises(InputError, match="line.din row 1.*TMOT_NR.*means_of_transport_desc.din"):
+            transform(db, settings)
+        assert db.execute("SELECT * FROM gtfs_routes").fetchall() == []
+        assert db.execute("SELECT * FROM map_line_2_routes").fetchall() == []
+    else:
+        transform(db, settings)
+        assert db.execute("SELECT route_type FROM gtfs_routes").fetchall() == [(3,)]
+
+
+@pytest.mark.parametrize("conflicting", [False, True])
+def test_transport_description_duplicates_must_agree(db, conflicting):
+    db.execute("INSERT INTO dino_means_of_transport_desc VALUES ('1', '10', ?)", ("0" if conflicting else "3",))
+    create_lines(db, [("1", "42", "a", "1", "A", "42", "10", "")])
+    if conflicting:
+        with pytest.raises(CollisionError, match="means_of_transport_desc.din row 1.*means_of_transport_desc.din row 7"):
+            transform(db)
+        assert db.execute("SELECT * FROM gtfs_routes").fetchall() == []
+    else:
+        transform(db)
+        assert db.execute("SELECT route_type FROM gtfs_routes").fetchall() == [(0,)]
+
+
+def test_transport_description_requires_lookup_columns_when_present(db):
+    db.execute("DROP TABLE dino_means_of_transport_desc")
+    db.execute("CREATE TABLE dino_means_of_transport_desc (VERSION TEXT, MOT_NR TEXT)")
+    create_lines(db, [])
+    with pytest.raises(InputError, match="means_of_transport_desc.din is missing required columns: TMOT_NR"):
+        transform(db)
 
 
 def test_defaults_populate_gtfs_columns_without_inventing_source_metadata(db):
@@ -462,7 +528,7 @@ def test_replaced_route_ids_do_not_cause_false_collisions(db):
     ({"mapping": {"mode_of_transport": {"10": -1}}}, "GTFS route_type integer"),
     ({"mapping": {"mode_of_transport": {"10": 2**63}}}, "SQLite integer range"),
     ({"mapping": {"mode_of_transport": {True: 3}}}, "keys must be non-empty"),
-    ({"mapping": {"mode_of_transport": {10: 3, "10": 2}}}, "Duplicate MOT_NR"),
+    ({"mapping": {"mode_of_transport": {10: 3, "10": 2}}}, "Duplicate TMOT_NR"),
     ({"defaults": {"routes": {"route_type": None}}}, "defaults.routes.route_type"),
     ({"defaults": {"routes": {"route_type": True}}}, "GTFS route_type integer"),
     ({"defaults": {"routes": {"route_type": "3"}}}, "GTFS route_type integer"),

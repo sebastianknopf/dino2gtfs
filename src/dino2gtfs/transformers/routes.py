@@ -42,13 +42,13 @@ def _mode_mapping(settings: Mapping[str, Any]) -> dict[str, int]:
     result: dict[str, int] = {}
     for key, value in modes.items():
         if isinstance(key, bool) or not isinstance(key, (str, int)) or not str(key).strip():
-            raise ConfigurationError("mapping.mode_of_transport keys must be non-empty MOT_NR strings or integers")
+            raise ConfigurationError("mapping.mode_of_transport keys must be non-empty TMOT_NR strings or integers")
         
         key = str(key)
         
         route_type = _route_type(value, f"mapping.mode_of_transport[{key!r}]")
         if key in result:
-            raise ConfigurationError(f"Duplicate MOT_NR in mapping.mode_of_transport: {key!r}")
+            raise ConfigurationError(f"Duplicate TMOT_NR in mapping.mode_of_transport: {key!r}")
         
         result[key] = route_type
     
@@ -105,6 +105,22 @@ class RoutesTransformer(TransformerBase):
         columns = _columns(database, "line", (*LINE_KEY, "LINE_NAME"))
         if template is not None:
             self.validate_template_fields(template, {"line": columns | {"OP_CODE"}}, ("route_type",))
+
+        transport_modes: dict[SourceKey, tuple[str | None, str]] = {}
+        if _columns(database, "means_of_transport_desc", ("VERSION", "MOT_NR", "TMOT_NR"), optional=True):
+            for rowid, row in _rows(database, "means_of_transport_desc"):
+                context = f"means_of_transport_desc.din row {rowid}"
+                key = _source_key(row, ("VERSION", "MOT_NR"), context)
+                tmot = _optional(row, "TMOT_NR")
+                previous = transport_modes.get(key)
+                
+                if previous is not None and previous[0] != tmot:
+                    raise CollisionError(
+                        f"conflicting TMOT_NR for VERSION {key[0]!r}, MOT_NR {key[1]!r} "
+                        f"({previous[1]} and {context})"
+                    )
+                
+                transport_modes.setdefault(key, (tmot, context))
         
         if not database.execute(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'map_operator_2_agency'"
@@ -142,12 +158,15 @@ class RoutesTransformer(TransformerBase):
                     raise InputError(f"{context}: agency mapping references missing gtfs_agency ID {agency_id!r}")
 
             mot = _optional(row, "MOT_NR")
-            mapped_type = modes.get(mot) if mot is not None else None
+            description = transport_modes.get((key[0], mot)) if mot is not None else None
+            tmot = description[0] if description is not None else None
+            mapped_type = modes.get(tmot) if tmot is not None else None
             route_type = self.apply_configuration({"route_type": mapped_type}, defaults, overrides).get("route_type")
             
             if route_type is None:
                 raise InputError(
-                    f"{context}: no mapping.mode_of_transport entry for MOT_NR {mot!r} "
+                    f"{context}: no mapping.mode_of_transport entry for TMOT_NR {tmot!r} "
+                    f"(MOT_NR {mot!r} via means_of_transport_desc.din) "
                     "and no defaults.routes.route_type or overrides.routes.route_type"
                 )
             

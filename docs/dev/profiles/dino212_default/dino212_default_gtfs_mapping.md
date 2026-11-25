@@ -155,7 +155,7 @@ Every row below is expressed as **GTFS field > DINO origin > conversion/constrai
 | `agency_id` | line.din OP_Code + operator.din OP_Code | R/E: line-assigned operator is GTFS agency; external operator mapping resolves overrides and missing codes |
 | `route_short_name` | line.din LINE_NAME | D/C: public line designation |
 | `route_long_name` | line.din / route.din endpoints | R/C: only if distinct meaningful long name |
-| `route_type` | line.din MOT_NR / branch.din / means_of_transport_desc.din / train_category.din | R: verified DINO mode-to-GTFS enum lookup |
+| `route_type` | line.din MOT_NR -> means_of_transport_desc.din TMOT_NR, joined by VERSION and MOT_NR | R: map TMOT_NR via mapping.mode_of_transport; defaults.routes.route_type is the fallback, overrides.routes.route_type takes precedence |
 | `route_color, route_text_color` | line_attribute.din + attribute.din, if documented color codes | C: only genuine colors |
 | `route_desc, route_url, route_sort_order` | line.din / verified attributes or config | C/E: no invented metadata |
 | `network_id` | none | O: network assignments excluded by project decision |
