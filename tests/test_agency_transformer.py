@@ -188,6 +188,24 @@ def test_agency_template_supports_generic_entity_and_canonical():
         assert db.execute("SELECT agency_id FROM gtfs_agency").fetchall() == [("agency:2:A:1",)]
 
 
+def test_same_operator_code_maps_to_distinct_canonical_agencies_by_version():
+    settings = {**SETTINGS, "ids": {"agency": {
+        "mode": "template", "template": "{gtfs.canonical}"
+    }}}
+    with temporary_database() as db:
+        db.execute("CREATE TABLE dino_operator (VERSION TEXT, OP_CODE TEXT, OP_LONG_NAME TEXT)")
+        db.executemany("INSERT INTO dino_operator VALUES (?, ?, ?)", [
+            ("1", "A", "First version"), ("2", "A", "Second version")
+        ])
+        transform(db, settings)
+        assert db.execute(
+            "SELECT agency_id, agency_name FROM gtfs_agency ORDER BY agency_id"
+        ).fetchall() == [("1:A", "First version"), ("2:A", "Second version")]
+        assert db.execute(
+            "SELECT VERSION, OP_CODE, gtfs_id FROM map_operator_2_agency ORDER BY VERSION"
+        ).fetchall() == [("1", "A", "1:A"), ("2", "A", "2:A")]
+
+
 def test_agency_canonical_requires_version_and_operator_code():
     settings = {**SETTINGS, "ids": {"agency": {
         "mode": "template", "template": "{gtfs.canonical}"
