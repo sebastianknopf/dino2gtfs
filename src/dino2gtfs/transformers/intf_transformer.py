@@ -7,4 +7,6 @@ from typing import Any, Protocol
 class Transformer(Protocol):
     """Transform imported data into one GTFS object table."""
 
+    def initialize(self, database: sqlite3.Connection, settings: Mapping[str, Any]) -> None: ...
+
     def transform(self, database: sqlite3.Connection, settings: Mapping[str, Any]) -> None: ...

@@ -14,6 +14,11 @@ NAME_COLUMNS = ("OP_TRADING_NAME", "OP_LONG_NAME", "OP_PUBLIC_SHORT")
 class AgencyTransformer(TransformerBase):
     """Create one agency per DINO operator code."""
 
+    def initialize(self, database: sqlite3.Connection, settings: Mapping[str, Any]) -> None:
+        database.execute(
+            "CREATE TABLE map_operator_2_agency (VERSION TEXT, OP_CODE TEXT, gtfs_id TEXT)"
+        )
+
     def fingerprint_components(
         self, sources: Mapping[str, Mapping[str, object]], context: str
     ) -> tuple[str, ...]:
@@ -52,6 +57,7 @@ class AgencyTransformer(TransformerBase):
 
         operators: dict[str, tuple[str, str, int]] = {}
         identifiers: dict[str, tuple[str, int]] = {}
+        mappings: dict[tuple[object, str], str] = {}
         for rowid, *values in database.execute('SELECT rowid, * FROM "dino_operator"'):
             row = dict(zip(column_names, values))
             code = row["OP_CODE"]
@@ -81,6 +87,7 @@ class AgencyTransformer(TransformerBase):
             
             operators.setdefault(code, (identifier, name, rowid))
             identifiers.setdefault(identifier, (code, rowid))
+            mappings[(row.get("VERSION"), code)] = identifier
             
         if not operators:
             raise InputError("operator.din contains no operators")
@@ -97,6 +104,11 @@ class AgencyTransformer(TransformerBase):
             database, "agency", ("agency_id", "agency_name"),
             ({"agency_id": identifier, "agency_name": name} for identifier, name, _ in operators.values()),
             defaults,
+        )
+        
+        database.executemany(
+            "INSERT INTO map_operator_2_agency (VERSION, OP_CODE, gtfs_id) VALUES (?, ?, ?)",
+            ((version, code, identifier) for (version, code), identifier in mappings.items()),
         )
         
         LOGGER.info("transformed %d DINO operators into GTFS agencies", len(operators))

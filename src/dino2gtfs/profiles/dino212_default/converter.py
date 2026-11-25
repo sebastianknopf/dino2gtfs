@@ -20,4 +20,6 @@ class Dino212Converter:
         LOGGER.info("starting transformations with DINO 2.1.2 profile")
         
         for transformer in self.transformers:
-            transformer().transform(database, settings)
+            instance = transformer()
+            instance.initialize(database, settings)
+            instance.transform(database, settings)

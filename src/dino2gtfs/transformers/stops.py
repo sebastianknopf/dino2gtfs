@@ -149,6 +149,16 @@ class _Coordinates:
 class StopsTransformer(TransformerBase):
     """Create station and boarding-stop rows from DINO stop relations."""
 
+    def initialize(self, database: sqlite3.Connection, settings: Mapping[str, Any]) -> None:
+        database.execute(
+            "CREATE TABLE map_stop_2_stops (VERSION TEXT, STOP_ID TEXT, gtfs_id TEXT)"
+        )
+
+        database.execute(
+            "CREATE TABLE map_stop_point_2_stops "
+            "(VERSION TEXT, STOP_ID TEXT, STOP_AREA_ID TEXT, STOPPING_POINT_NR TEXT, gtfs_id TEXT)"
+        )
+
     def fingerprint_components(
         self, sources: Mapping[str, Mapping[str, object]], context: str
     ) -> tuple[str, ...]:
@@ -201,7 +211,10 @@ class StopsTransformer(TransformerBase):
         stations: dict[str, tuple[Row, str, str]] = {}
         station_versions: dict[str, str] = {}
         global_stations: dict[str, tuple[Row, str, str]] = {}
-        point_keys: set[SourceKey] = set()
+        point_ids: dict[SourceKey, str] = {}
+        station_mappings: dict[SourceKey, str] = {}
+        point_mappings: dict[SourceKey, str] = {}
+        point_aliases: dict[SourceKey, SourceKey] = {}
 
         def check_global_id(row: Row, key: SourceKey, kind: str, context: str) -> None:
             global_id = _optional(row, "GLOBAL_ID")
@@ -248,11 +261,14 @@ class StopsTransformer(TransformerBase):
             context = f"stop.din row {rowid}"
             key = _source_key(row, ("VERSION", "STOP_NR"), context)
             if key[1] in stations:
+                station_mappings[key] = stations[key[1]][1]
                 continue
+            
             station_versions[key[1]] = key[0]
             check_global_id(row, key, "station", context)
             
             identifier = self._identifier(mode, template, {"stop": row}, context)
+            station_mappings[key] = identifier
             if reuse_global_id(identifier, "station", context):
                 stations[key[1]] = global_stations[identifier]
                 continue
@@ -286,8 +302,8 @@ class StopsTransformer(TransformerBase):
                 areas[key] = (row, context)
 
         if point_columns:
-            preferred_points: set[tuple[str, str]] = set()
-            preferred_global_ids: set[tuple[str, str]] = set()
+            preferred_points: dict[tuple[str, str], Row] = {}
+            preferred_global_ids: dict[tuple[str, str], Row] = {}
             for _, row in _rows(database, "stop_point"):
                 area_nr = _optional(row, "STOP_AREA_NR")
                 stop_nr = _optional(row, "STOP_NR")
@@ -295,27 +311,36 @@ class StopsTransformer(TransformerBase):
                 global_id = _optional(row, "GLOBAL_ID")
                 if area_nr is not None and area_nr != "0" and stop_nr is not None and stop_nr in stations:
                     if point_nr is not None:
-                        preferred_points.add((stop_nr, point_nr))
+                        preferred_points.setdefault((stop_nr, point_nr), row)
+                    
                     if global_id is not None:
-                        preferred_global_ids.add((stop_nr, global_id))
+                        preferred_global_ids.setdefault((stop_nr, global_id), row)
 
             for rowid, row in _rows(database, "stop_point"):
                 stop_nr = _optional(row, "STOP_NR")
                 if stop_nr not in stations:
                     continue
-                if (_optional(row, "STOP_AREA_NR") == "0"
-                        and ((stop_nr, _optional(row, "STOPPING_POINT_NR")) in preferred_points
-                             or (stop_nr, _optional(row, "GLOBAL_ID")) in preferred_global_ids)):
-                    continue
-                
                 context = f"stop_point.din row {rowid}"
                 key = _source_key(row, ("VERSION", "STOP_NR", "STOP_AREA_NR", "STOPPING_POINT_NR"), context)
+                if key[2] == "0":
+                    preferred = preferred_points.get((stop_nr, key[3]))
+                    global_id = _optional(row, "GLOBAL_ID")
+                    if preferred is None and global_id is not None:
+                        preferred = preferred_global_ids.get((stop_nr, global_id))
+                    
+                    if preferred is not None:
+                        point_aliases[key] = _source_key(
+                            preferred, ("STOP_NR", "STOP_AREA_NR", "STOPPING_POINT_NR"), context
+                        )
+                        
+                        continue
+
                 if key[0] == station_versions[key[1]]:
                     check_global_id(row, key, "platform", context)
-                if key[1:] in point_keys:
-                    continue
                 
-                point_keys.add(key[1:])
+                if key[1:] in point_ids:
+                    point_mappings[key] = point_ids[key[1:]]
+                    continue
                 
                 parent, parent_id, parent_context = stations[key[1]]
                 if results[parent_id][0]["location_type"] != 1:
@@ -326,6 +351,8 @@ class StopsTransformer(TransformerBase):
                 
                 area = areas.get(key[:3])
                 identifier = self._identifier(mode, template, {"stop": parent, "stop_point": row}, context)
+                point_ids[key[1:]] = identifier
+                point_mappings[key] = identifier
                 if reuse_global_id(identifier, "platform", context):
                     continue
                 
@@ -359,6 +386,20 @@ class StopsTransformer(TransformerBase):
                 }, context)
 
         fields = ("stop_id", "stop_name", "stop_code", "stop_lat", "stop_lon", "location_type", "parent_station", "stop_access")
+        for key, preferred_key in point_aliases.items():
+            point_mappings[key] = point_ids[preferred_key]
+
         self.insert_with_defaults(database, "stops", fields, (values for values, _ in results.values()), defaults)
+        
+        database.executemany(
+            "INSERT INTO map_stop_2_stops (VERSION, STOP_ID, gtfs_id) VALUES (?, ?, ?)",
+            ((*key, identifier) for key, identifier in station_mappings.items()),
+        )
+        
+        database.executemany(
+            "INSERT INTO map_stop_point_2_stops "
+            "(VERSION, STOP_ID, STOP_AREA_ID, STOPPING_POINT_NR, gtfs_id) VALUES (?, ?, ?, ?, ?)",
+            ((*key, identifier) for key, identifier in point_mappings.items()),
+        )
         
         LOGGER.info("transformed %d DINO stations and boarding stops", len(results))

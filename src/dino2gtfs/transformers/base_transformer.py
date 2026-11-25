@@ -15,6 +15,10 @@ class TransformerBase(Transformer, ABC):
     """Provide shared template handling and canonical entity identity."""
 
     @abstractmethod
+    def initialize(self, database: sqlite3.Connection, settings: Mapping[str, Any]) -> None:
+        """Initialize transformer-specific tables before transformation."""
+
+    @abstractmethod
     def transform(self, database: sqlite3.Connection, settings: Mapping[str, Any]) -> None:
         """Transform imported data into a GTFS object table."""
 
