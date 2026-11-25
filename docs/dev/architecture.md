@@ -13,7 +13,7 @@ The selected profile is mandatory for conversion, but DINO import is profile-ind
 
 `TransformerBase` supplies the `gtfs.entity`, `gtfs.canonical` and `gtfs.fingerprint` template fields. Each transformer implements `fingerprint_components` for its canonical entity identity; the base class computes the key or hash only when requested. The agency transformer uses the operator code, and transformers remain responsible for detecting identity collisions.
 
-The base transformer validates `defaults.<entity>` against the exact GTFS table and column names, rejects ID fields, and merges configured defaults over transformed values. The agency transformer inserts every configured field and validates its required name, URL and timezone.
+The base transformer validates `defaults.<entity>` and `overrides.<entity>` against the exact GTFS table and column names and rejects ID fields in both. Defaults fill absent, null or blank transformed values without replacing numeric zero or false. Overrides are applied last, including explicit nulls. Transformers resolve this configuration before validating required fields, checking collisions or computing identities that depend on configured fields; insertion includes every configured column.
 
 The database adapter initializes the shared `gtfs_` tables as soon as the connection opens. The packaged `gtfs_static_schema.sql` covers the GTFS Schedule reference and the notice, notice assignment and trip segment fields in [google/transit#638](https://github.com/google/transit/pull/638). The GTFS tables have no indexes or foreign keys; primary-key uniqueness and references are not enforced by SQLite.
 

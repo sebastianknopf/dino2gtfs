@@ -73,58 +73,66 @@ class TransformerBase(Transformer, ABC):
     ) -> tuple[str, ...]:
         """Return canonical components using source rows and computed gtfs fields."""
 
-    def configured_defaults(
-        self, database: sqlite3.Connection, settings: Mapping[str, Any], entity: str
+    def configured_fields(
+        self, database: sqlite3.Connection, settings: Mapping[str, Any], entity: str, section: str
     ) -> dict[str, object]:
-        """Validate all configured defaults against the GTFS schema."""
-        defaults = settings.get("defaults", {})
-        if not isinstance(defaults, Mapping):
-            raise ConfigurationError("defaults must be a mapping")
+        """Validate configured defaults or overrides against the GTFS schema."""
+        configured = settings.get(section, {})
+        if not isinstance(configured, Mapping):
+            raise ConfigurationError(f"{section} must be a mapping")
 
-        for name, values in defaults.items():
+        for name, values in configured.items():
             if not isinstance(name, str) or not isinstance(values, Mapping):
-                raise ConfigurationError(f"defaults.{name} must be an entity mapping")
+                raise ConfigurationError(f"{section}.{name} must be an entity mapping")
             
             table = f"gtfs_{name}"
             exists = database.execute(
                 "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)
             ).fetchone()
             if not exists:
-                raise ConfigurationError(f"Unknown GTFS entity in defaults: {name}")
+                raise ConfigurationError(f"Unknown GTFS entity in {section}: {name}")
             
             columns = {row[1] for row in database.execute("SELECT * FROM pragma_table_info(?)", (table,))}
             for field, value in values.items():
                 if not isinstance(field, str) or field not in columns:
-                    raise ConfigurationError(f"Unknown GTFS field in defaults.{name}: {field!r}")
+                    raise ConfigurationError(f"Unknown GTFS field in {section}.{name}: {field!r}")
                 
                 if field == "id" or field.endswith("_id") or field == "parent_station":
-                    raise ConfigurationError(f"ID field defaults.{name}.{field} is not allowed; configure ids instead")
+                    raise ConfigurationError(f"ID field {section}.{name}.{field} is not allowed; configure ids instead")
                 
                 if value is not None and not isinstance(value, (str, int, float)):
-                    raise ConfigurationError(f"defaults.{name}.{field} must be a scalar SQLite value")
+                    raise ConfigurationError(f"{section}.{name}.{field} must be a scalar SQLite value")
                 
                 if isinstance(value, int) and not -(2**63) <= value < 2**63:
-                    raise ConfigurationError(f"defaults.{name}.{field} is outside the SQLite integer range")
+                    raise ConfigurationError(f"{section}.{name}.{field} is outside the SQLite integer range")
                 
                 if isinstance(value, float) and not math.isfinite(value):
-                    raise ConfigurationError(f"defaults.{name}.{field} must be finite")
+                    raise ConfigurationError(f"{section}.{name}.{field} must be finite")
 
-        return dict(defaults.get(entity, {}))
+        return dict(configured.get(entity, {}))
 
-    def apply_defaults(self, values: Mapping[str, object], defaults: Mapping[str, object]) -> dict[str, object]:
-        """Override transformed values with the configured entity defaults."""
-        return {**values, **defaults}
+    def apply_configuration(
+        self, values: Mapping[str, object], defaults: Mapping[str, object], overrides: Mapping[str, object]
+    ) -> dict[str, object]:
+        """Fill absent or blank values from defaults, then apply explicit overrides."""
+        result = dict(values)
+        for field, default in defaults.items():
+            value = result.get(field)
+            if value is None or (isinstance(value, str) and not value.strip()):
+                result[field] = default
+        
+        return {**result, **overrides}
 
-    def insert_with_defaults(
+    def insert_with_configuration(
         self, database: sqlite3.Connection, entity: str, fields: tuple[str, ...],
-        rows: Iterable[Mapping[str, object]], defaults: Mapping[str, object]
+        rows: Iterable[Mapping[str, object]], defaults: Mapping[str, object], overrides: Mapping[str, object]
     ) -> None:
-        """Insert transformed rows with every configured default column."""
-        columns = tuple(dict.fromkeys((*fields, *defaults)))
+        """Insert transformed rows with every configured default and override column."""
+        columns = tuple(dict.fromkeys((*fields, *defaults, *overrides)))
         quoted_columns = ", ".join('"' + column.replace('"', '""') + '"' for column in columns)
         placeholders = ", ".join("?" for _ in columns)
         table = '"gtfs_' + entity.replace('"', '""') + '"'
-        merged_rows = (self.apply_defaults(row, defaults) for row in rows)
+        merged_rows = (self.apply_configuration(row, defaults, overrides) for row in rows)
         
         database.executemany(
             f"INSERT INTO {table} ({quoted_columns}) VALUES ({placeholders})",

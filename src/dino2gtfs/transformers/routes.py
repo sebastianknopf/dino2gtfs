@@ -56,7 +56,7 @@ def _mode_mapping(settings: Mapping[str, Any]) -> dict[str, int]:
 
 
 class RoutesTransformer(TransformerBase):
-    """Consolidate line variants by line number, operator and mapped mode."""
+    """Consolidate line variants by line number and resolved GTFS mode."""
 
     def initialize(self, database: sqlite3.Connection, settings: Mapping[str, Any]) -> None:
         database.execute(
@@ -69,24 +69,24 @@ class RoutesTransformer(TransformerBase):
     ) -> tuple[str, ...]:
         return (
             _required(sources["line"], "LINE_NR", context),
-            _optional(sources["line"], "OP_CODE") or "",
             _required(sources["gtfs"], "route_type", context),
         )
 
     def transform(self, database: sqlite3.Connection, settings: Mapping[str, Any]) -> None:
-        defaults = self.configured_defaults(database, settings, "routes")
-        default_type = (
-            _route_type(defaults.pop("route_type"), "defaults.routes.route_type")
-            if "route_type" in defaults else None
-        )
+        defaults = self.configured_fields(database, settings, "routes", "defaults")
+        overrides = self.configured_fields(database, settings, "routes", "overrides")
         
         modes = _mode_mapping(settings)
 
-        for field in ("route_short_name", "route_long_name"):
-            if field in defaults and defaults[field] is not None and (
-                not isinstance(defaults[field], str) or not defaults[field].strip()
-            ):
-                raise ConfigurationError(f"defaults.routes.{field} must be a non-empty string or null")
+        for section, configured in (("defaults", defaults), ("overrides", overrides)):
+            if "route_type" in configured:
+                _route_type(configured["route_type"], f"{section}.routes.route_type")
+            
+            for field in ("route_short_name", "route_long_name"):
+                if field in configured and configured[field] is not None and (
+                    not isinstance(configured[field], str) or not configured[field].strip()
+                ):
+                    raise ConfigurationError(f"{section}.routes.{field} must be a non-empty string or null")
 
         ids = settings.get("ids")
         if not isinstance(ids, Mapping) or not isinstance(ids.get("routes"), Mapping):
@@ -113,8 +113,9 @@ class RoutesTransformer(TransformerBase):
             agency_mappings.setdefault((version, code), set()).add(identifier)
 
         existing_ids = {row[0] for row in database.execute("SELECT route_id FROM gtfs_routes")}
-        routes: dict[SourceKey, tuple[str, Row, str]] = {}
+        routes: dict[SourceKey, tuple[str, Row, str, str | None]] = {}
         identifiers: dict[str, str] = {}
+        global_ids: dict[str, str] = {}
         mappings: dict[SourceKey, tuple[SourceKey, str]] = {}
 
         for rowid, row in _rows(database, "line"):
@@ -137,18 +138,18 @@ class RoutesTransformer(TransformerBase):
                     raise InputError(f"{context}: agency mapping references missing gtfs_agency ID {agency_id!r}")
 
             mot = _optional(row, "MOT_NR")
-            route_type = modes.get(mot) if mot is not None else None
-            if route_type is None:
-                route_type = default_type
+            mapped_type = modes.get(mot) if mot is not None else None
+            route_type = self.apply_configuration({"route_type": mapped_type}, defaults, overrides).get("route_type")
             
             if route_type is None:
                 raise InputError(
                     f"{context}: no mapping.mode_of_transport entry for MOT_NR {mot!r} "
-                    "and no defaults.routes.route_type"
+                    "and no defaults.routes.route_type or overrides.routes.route_type"
                 )
             
             virtual = {"route_type": str(route_type)}
             identity = self.fingerprint_components({"line": row, "gtfs": virtual}, context)
+            global_id = _optional(row, "GLOBAL_ID")
             if mode == "global":
                 global_id = _required(row, "GLOBAL_ID", context)
                 identifier = f"route:{global_id}:{code}:{route_type}"
@@ -158,23 +159,33 @@ class RoutesTransformer(TransformerBase):
                     template, {"line": row}, context, virtual, optional_fields=(("line", "OP_CODE"),)
                 )
 
-            values = self.apply_defaults({
+            values = self.apply_configuration({
                 "route_id": identifier, "agency_id": agency_id,
                 "route_short_name": _optional(row, "LINE_NAME"), "route_long_name": None,
                 "route_type": route_type,
-            }, defaults)
+            }, defaults, overrides)
             
             if key in mappings and mappings[key][0] != identity:
                 raise CollisionError(
                     f"conflicting gtfs_routes source identity: {identifier!r} ({mappings[key][1]} and {context})"
                 )
 
-            routes[identity] = (identifier, values, context)
+            routes[identity] = (identifier, values, context, global_id)
             mappings.setdefault(key, (identity, context))
 
-        for identifier, values, context in routes.values():
+        for identifier, values, context, global_id in routes.values():
             if identifier in existing_ids:
                 raise CollisionError(f"identity collision in gtfs_routes: {identifier!r} (existing route and {context})")
+
+            if global_id is not None:
+                if global_id in global_ids:
+                    message = f"global ID collision in gtfs_routes: {global_id!r} ({global_ids[global_id]} and {context})"
+                    if mode == "global":
+                        raise CollisionError(message)
+                    
+                    LOGGER.warning("%s", message)
+                else:
+                    global_ids[global_id] = context
 
             if identifier in identifiers:
                 raise CollisionError(
@@ -185,9 +196,9 @@ class RoutesTransformer(TransformerBase):
             if not values["route_short_name"] and not values["route_long_name"]:
                 raise InputError(f"LINE_NAME missing in {context}")
 
-        self.insert_with_defaults(
+        self.insert_with_configuration(
             database, "routes", ("route_id", "agency_id", "route_short_name", "route_long_name", "route_type"),
-            (values for _, values, _ in routes.values()), defaults,
+            (values for _, values, _, _ in routes.values()), defaults, overrides,
         )
         
         database.executemany(

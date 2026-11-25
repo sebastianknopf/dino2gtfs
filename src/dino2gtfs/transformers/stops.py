@@ -88,10 +88,11 @@ class _Coordinates:
                 
                 self.metadata[version] = metadata
 
-    def convert(self, version: str, xy: tuple[float, float] | None, context: str) -> tuple[float, float]:
+    def convert(
+        self, version: str, xy: tuple[float, float] | None, context: str
+    ) -> tuple[float, float] | tuple[None, None]:
         if xy is None:
-            LOGGER.warning("%s: missing coordinates; using 0,0 before defaults", context)
-            return 0.0, 0.0
+            return None, None
         crs, tx, ty, sx, sy = self.metadata.get(version, (None, 0.0, 0.0, 1.0, 1.0))
         configured = crs is None
         crs = self.default_crs if configured else crs
@@ -147,11 +148,13 @@ class StopsTransformer(TransformerBase):
         return self.render_id(template, sources, context, {"stop_kind": kind})
 
     def transform(self, database: sqlite3.Connection, settings: Mapping[str, Any]) -> None:
-        defaults = self.configured_defaults(database, settings, "stops")
-        if "stop_name" in defaults and (
-            not isinstance(defaults["stop_name"], str) or not defaults["stop_name"].strip()
-        ):
-            raise ConfigurationError("defaults.stops.stop_name must be a non-empty string")
+        defaults = self.configured_fields(database, settings, "stops", "defaults")
+        overrides = self.configured_fields(database, settings, "stops", "overrides")
+        for section, configured in (("defaults", defaults), ("overrides", overrides)):
+            if "stop_name" in configured and (
+                not isinstance(configured["stop_name"], str) or not configured["stop_name"].strip()
+            ):
+                raise ConfigurationError(f"{section}.stops.stop_name must be a non-empty string")
         
         ids = settings.get("ids")
         if not isinstance(ids, Mapping) or not isinstance(ids.get("stops"), Mapping):
@@ -213,11 +216,23 @@ class StopsTransformer(TransformerBase):
             return True
 
         def add(identifier: str, values: Row, context: str) -> None:
-            values = self.apply_defaults(values, defaults)
+            values = self.apply_configuration(values, defaults, overrides)
+            missing_coordinates = False
+            for field in ("stop_lat", "stop_lon"):
+                value = values[field]
+                if field not in overrides and (value is None or (isinstance(value, str) and not value.strip())):
+                    values[field] = 0.0
+                    missing_coordinates = True
+            
+            if missing_coordinates:
+                LOGGER.warning("%s: missing coordinates; using 0,0 for missing values", context)
+            
             if identifier in existing_ids:
                 raise CollisionError(f"identity collision in gtfs_stops: {identifier!r} (existing stop and {context})")
+            
             if identifier in results:
                 raise CollisionError(f"identity collision in gtfs_stops: {identifier!r} ({results[identifier][1]} and {context})")
+            
             results[identifier] = (values, context)
 
         for rowid, row in _rows(database, "stop"):
@@ -239,9 +254,9 @@ class StopsTransformer(TransformerBase):
                 stations[key[1]] = global_stations[identifier]
                 continue
             
-            name = defaults.get("stop_name", _optional(row, "STOP_NAME"))
+            name = self.apply_configuration({"stop_name": _optional(row, "STOP_NAME")}, defaults, overrides)["stop_name"]
             if name is None:
-                LOGGER.warning("%s: STOP_NAME is missing and no defaults.stops.stop_name is configured; "
+                LOGGER.warning("%s: STOP_NAME is missing and no defaults.stops.stop_name or overrides.stops.stop_name is configured; "
                                "the resulting stops may be invalid in GTFS", context)
             
             lat, lon = coordinates.convert(key[0], _coordinates(row, "STOP_POS_X", "STOP_POS_Y", context), context)
@@ -312,7 +327,7 @@ class StopsTransformer(TransformerBase):
                 if results[parent_id][0]["location_type"] != 1:
                     raise ConfigurationError(f"{context}: parent station must have location_type 1")
                 
-                if "location_type" in defaults and defaults["location_type"] != 0:
+                if "location_type" in overrides and overrides["location_type"] != 0:
                     raise ConfigurationError(f"{context}: boarding stop must have location_type 0")
                 
                 area = areas.get(key[:3])
@@ -355,7 +370,9 @@ class StopsTransformer(TransformerBase):
         for key, preferred_key in point_aliases.items():
             point_mappings[key] = point_ids[preferred_key]
 
-        self.insert_with_defaults(database, "stops", fields, (values for values, _ in results.values()), defaults)
+        self.insert_with_configuration(
+            database, "stops", fields, (values for values, _ in results.values()), defaults, overrides
+        )
         
         database.executemany(
             "INSERT INTO map_stop_2_stops (VERSION, STOP_ID, gtfs_id) VALUES (?, ?, ?)",
