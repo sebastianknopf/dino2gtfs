@@ -43,7 +43,7 @@ ids:
     template: "route:{gtfs.canonical}"
   calendar:
     mode: template
-    template: "service:{gtfs.service_fingerprint}"
+    template: "service:{gtfs.canonical}"
   shapes:
     mode: template
     template: "shape:{gtfs.shape_fingerprint}"

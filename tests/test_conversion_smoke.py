@@ -4,6 +4,16 @@ import sqlite3
 from dino2gtfs.cli import main
 
 
+def add_calendar(archive):
+    archive.writestr("version.din", "VERSION;PERIOD_DATE_FROM;PERIOD_DATE_TO\n1;20260105;20260111\n")
+    archive.writestr("day_type_calendar.din", "VERSION;DAY;DAY_TYPE_NR\n1;20260105;1\n1;20260106;1\n")
+    archive.writestr("day_type_2_day_attribute.din", "VERSION;DAY_TYPE_NR;DAY_ATTRIBUTE_NR\n1;1;1\n")
+    archive.writestr("day_attribute.din", "VERSION;DAY_ATTRIBUTE_NR;STR_DAY_ATTRIBUTE\n1;1;\n")
+
+
+CALENDAR_IDS = "  calendar:\n    mode: template\n    template: 'service:{gtfs.canonical}'\n"
+
+
 def global_config(tmp_path):
     config = tmp_path / "config.yaml"
     config.write_text(
@@ -12,7 +22,7 @@ def global_config(tmp_path):
         "mapping:\n  mode_of_transport:\n    3: 0\n"
         "ids:\n  agency:\n    mode: template\n    template: 'agency:{operator.OP_CODE}'\n"
         "  stops:\n    mode: global\n"
-        "  routes:\n    mode: global\n"
+        "  routes:\n    mode: global\n" + CALENDAR_IDS
     )
     return config
 
@@ -22,6 +32,7 @@ def test_end_to_end_exports_agency(tmp_path):
     destination = tmp_path / "output.zip"
     config = global_config(tmp_path)
     with ZipFile(source, "w") as archive:
+        add_calendar(archive)
         archive.writestr("stop.din", "VERSION;STOP_NR;STOP_NAME;GLOBAL_ID;IS_RESPONSIBLE_STOP\n"
                                     "1;1;Test;S1;1\n1;2;External;S2;0\n")
         archive.writestr("operator.din", "VERSION;OP_CODE;OP_LONG_NAME\n1;1;Operator\n")
@@ -53,9 +64,10 @@ def test_default_conversion_retains_import_for_debugging(tmp_path):
         "  routes:\n    route_long_name: Configured long name\n"
         "ids:\n  agency:\n    mode: template\n    template: 'operator-{operator.OP_CODE}'\n"
         "  stops:\n    mode: template\n    template: 'stop:{gtfs.canonical}'\n"
-        "  routes:\n    mode: template\n    template: 'route-{line.LINE_NR}-{gtfs.route_type}'\n"
+        "  routes:\n    mode: template\n    template: 'route-{line.LINE_NR}-{gtfs.route_type}'\n" + CALENDAR_IDS
     )
     with ZipFile(source, "w") as archive:
+        add_calendar(archive)
         archive.writestr("stop.din", "VERSION;STOP_NR;STOP_NAME;IS_RESPONSIBLE_STOP\n1;1;Test;1\n")
         archive.writestr("operator.din", "VERSION;OP_CODE;OP_LONG_NAME\n1;1;Operator\n")
         archive.writestr("line.din", "VERSION;LINE_NR;STR_LINE_VAR;LINE_DIR_NR;OP_CODE;LINE_NAME;BRANCH_NR\n1;42;a;1;1;42;1\n")
@@ -95,9 +107,10 @@ def test_end_to_end_exports_fingerprint_agency_id(tmp_path):
         "  routes:\n    route_type: 3\n"
         "ids:\n  agency:\n    mode: template\n    template: 'agency:{gtfs.fingerprint}'\n"
         "  stops:\n    mode: global\n"
-        "  routes:\n    mode: template\n    template: 'route:{gtfs.fingerprint}'\n"
+        "  routes:\n    mode: template\n    template: 'route:{gtfs.fingerprint}'\n" + CALENDAR_IDS
     )
     with ZipFile(source, "w") as archive:
+        add_calendar(archive)
         archive.writestr("operator.din", "VERSION;OP_CODE;OP_LONG_NAME\n1;A;Operator\n")
         archive.writestr("stop.din", "VERSION;STOP_NR;STOP_NAME;GLOBAL_ID;IS_RESPONSIBLE_STOP\n1;1;Test;S1;1\n")
         archive.writestr("line.din", "VERSION;LINE_NR;STR_LINE_VAR;LINE_DIR_NR;OP_CODE;LINE_NAME;BRANCH_NR\n1;42;a;1;A;42;1\n")
