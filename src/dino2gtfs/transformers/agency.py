@@ -8,6 +8,12 @@ from dino2gtfs.domain.errors import CollisionError, ConfigurationError, InputErr
 from dino2gtfs.transformers.base_transformer import TransformerBase, required_source_value as _required
 
 LOGGER = logging.getLogger(__name__)
+
+# GTFS fields written by this transformer
+GTFS_FIELDS = ("agency_id", "agency_name")
+# DINO columns identifying an operator (canonical ID components)
+OPERATOR_KEY = ("VERSION", "OP_CODE")
+# DINO columns providing the agency name, in order of preference
 NAME_COLUMNS = ("OP_TRADING_NAME", "OP_LONG_NAME", "OP_PUBLIC_SHORT")
 
 
@@ -32,9 +38,10 @@ class AgencyTransformer(TransformerBase):
         components: tuple[str, ...] | None = None,
     ) -> str:
         operator = sources["operator"]
-        return ":".join(_required(operator, field, context) for field in ("VERSION", "OP_CODE"))
+        return ":".join(_required(operator, field, context) for field in OPERATOR_KEY)
 
     def transform(self, database: sqlite3.Connection, settings: Mapping[str, Any]) -> None:
+        # Step 1: read and validate the configuration
         defaults = self.configured_fields(database, settings, "agency", "defaults")
         overrides = self.configured_fields(database, settings, "agency", "overrides")
         for section, configured in (("defaults", defaults), ("overrides", overrides)):
@@ -43,7 +50,7 @@ class AgencyTransformer(TransformerBase):
                     not isinstance(configured[field], str) or not configured[field].strip()
                 ):
                     raise ConfigurationError(f"{section}.agency.{field} must be a non-empty string")
-            
+
             language = configured.get("agency_lang")
             if language is not None and (not isinstance(language, str) or not language.strip()):
                 raise ConfigurationError(f"{section}.agency.agency_lang must be a non-empty string or null")
@@ -55,16 +62,18 @@ class AgencyTransformer(TransformerBase):
 
         template = self.make_id_template(settings, "agency", {"operator": "operator.din"})
 
+        # Step 2: validate the DINO source table
         column_names = [row[1].upper() for row in database.execute('PRAGMA table_info("dino_operator")')]
         columns = set(column_names)
         if not columns:
             raise InputError("Missing DINO source file operator.din")
-        
+
         if "OP_CODE" not in columns or ("agency_name" not in configured_agency and not columns.intersection(NAME_COLUMNS)):
             raise InputError("operator.din requires OP_CODE and at least one public name column")
-        
+
         self.validate_template_fields(template, {"operator": columns})
 
+        # Step 3: merge operators by OP_CODE; the last operator.din entry wins
         operators: dict[str, tuple[str, str, int]] = {}
         mappings: dict[tuple[object, str], None] = {}
         for rowid, *values in database.execute('SELECT rowid, * FROM "dino_operator"'):
@@ -72,7 +81,7 @@ class AgencyTransformer(TransformerBase):
             code = row["OP_CODE"]
             if not isinstance(code, str) or not code.strip():
                 raise InputError(f"operator.din row {rowid}: OP_CODE is required")
-            
+
             name = next((row[column] for column in NAME_COLUMNS if isinstance(row.get(column), str) and row[column].strip()), None)
             name = self.apply_configuration({"agency_name": name}, defaults, overrides)["agency_name"]
             if not isinstance(name, str) or not name.strip():
@@ -93,6 +102,7 @@ class AgencyTransformer(TransformerBase):
         if not operators:
             raise InputError("operator.din contains no operators")
 
+        # Step 4: reject ID collisions between the merged agencies
         existing_ids = {row[0] for row in database.execute("SELECT agency_id FROM gtfs_agency")}
         identifiers: dict[str, int] = {}
         for identifier, _, rowid in operators.values():
@@ -109,18 +119,19 @@ class AgencyTransformer(TransformerBase):
                 )
             identifiers[identifier] = rowid
 
+        # Step 5: write agencies and the operator mapping table
         self.insert_with_configuration(
-            database, "agency", ("agency_id", "agency_name"),
+            database, "agency", GTFS_FIELDS,
             (
                 {"agency_id": identifier, "agency_name": name}
                 for identifier, name, _ in operators.values()
             ),
             defaults, overrides,
         )
-        
+
         database.executemany(
             "INSERT INTO map_operator_2_agency (VERSION, OP_CODE, gtfs_id) VALUES (?, ?, ?)",
             ((version, code, operators[code][0]) for version, code in mappings),
         )
-        
+
         LOGGER.info("transformed %d DINO operators into GTFS agencies", len(operators))
