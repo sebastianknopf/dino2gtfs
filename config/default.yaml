@@ -46,7 +46,7 @@ ids:
     template: "service:{gtfs.canonical}"
   shapes:
     mode: template
-    template: "shape:{gtfs.shape_fingerprint}"
+    template: "shape:{gtfs.canonical}"
   trips:
     mode: global
     template: "trip:{trip.VERSION}:{trip.LINE_NR}:{trip.STR_LINE_VAR}:{trip.LINE_DIR_NR}:{trip.TRIP_ID}:{gtfs.split_key}"

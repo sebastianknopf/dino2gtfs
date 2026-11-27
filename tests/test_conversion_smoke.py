@@ -11,7 +11,14 @@ def add_calendar(archive):
     archive.writestr("day_attribute.din", "VERSION;DAY_ATTRIBUTE_NR;STR_DAY_ATTRIBUTE\n1;1;\n")
 
 
-CALENDAR_IDS = "  calendar:\n    mode: template\n    template: 'service:{gtfs.canonical}'\n"
+CALENDAR_IDS = (
+    "  calendar:\n    mode: template\n    template: 'service:{gtfs.canonical}'\n"
+    "  shapes:\n    mode: template\n    template: 'shape:{gtfs.canonical}'\n"
+)
+
+
+def add_route_stops(archive):
+    archive.writestr("route.din", "VERSION;LINE_NR;STR_LINE_VAR;LINE_DIR_NR;LINE_CONSEC_NR;STOP_NR;STOPPING_POINT_NR\n")
 
 
 def global_config(tmp_path):
@@ -33,6 +40,7 @@ def test_end_to_end_exports_agency(tmp_path):
     config = global_config(tmp_path)
     with ZipFile(source, "w") as archive:
         add_calendar(archive)
+        add_route_stops(archive)
         archive.writestr("stop.din", "VERSION;STOP_NR;STOP_NAME;GLOBAL_ID;IS_RESPONSIBLE_STOP\n"
                                     "1;1;Test;S1;1\n1;2;External;S2;0\n")
         archive.writestr("operator.din", "VERSION;OP_CODE;OP_LONG_NAME\n1;1;Operator\n")
@@ -68,6 +76,7 @@ def test_default_conversion_retains_import_for_debugging(tmp_path):
     )
     with ZipFile(source, "w") as archive:
         add_calendar(archive)
+        add_route_stops(archive)
         archive.writestr("stop.din", "VERSION;STOP_NR;STOP_NAME;IS_RESPONSIBLE_STOP\n1;1;Test;1\n")
         archive.writestr("operator.din", "VERSION;OP_CODE;OP_LONG_NAME\n1;1;Operator\n")
         archive.writestr("line.din", "VERSION;LINE_NR;STR_LINE_VAR;LINE_DIR_NR;OP_CODE;LINE_NAME;BRANCH_NR\n1;42;a;1;1;42;1\n")
@@ -111,6 +120,7 @@ def test_end_to_end_exports_fingerprint_agency_id(tmp_path):
     )
     with ZipFile(source, "w") as archive:
         add_calendar(archive)
+        add_route_stops(archive)
         archive.writestr("operator.din", "VERSION;OP_CODE;OP_LONG_NAME\n1;A;Operator\n")
         archive.writestr("stop.din", "VERSION;STOP_NR;STOP_NAME;GLOBAL_ID;IS_RESPONSIBLE_STOP\n1;1;Test;S1;1\n")
         archive.writestr("line.din", "VERSION;LINE_NR;STR_LINE_VAR;LINE_DIR_NR;OP_CODE;LINE_NAME;BRANCH_NR\n1;42;a;1;A;42;1\n")
