@@ -12,7 +12,9 @@ defaults:
   routes:
     route_type: 3
     cemv_support: 0
-overrides: {}
+overrides:
+  trips:
+    trip_headsign: "{vehicle_destination_text.VDT_TEXT_INTERIOR1}"
 mapping:
   mode_of_transport:
     0: 2
@@ -48,8 +50,8 @@ ids:
     mode: template
     template: "shape:{gtfs.canonical}"
   trips:
-    mode: global
-    template: "trip:{trip.VERSION}:{trip.LINE_NR}:{trip.STR_LINE_VAR}:{trip.LINE_DIR_NR}:{trip.TRIP_ID}:{gtfs.split_key}"
+    mode: template
+    template: "trip:{gtfs.canonical}"
   location_groups:
     mode: template
     template: "location_group:{gtfs.location_group_fingerprint}"

@@ -14,11 +14,21 @@ def add_calendar(archive):
 CALENDAR_IDS = (
     "  calendar:\n    mode: template\n    template: 'service:{gtfs.canonical}'\n"
     "  shapes:\n    mode: template\n    template: 'shape:{gtfs.canonical}'\n"
+    "  trips:\n    mode: template\n    template: 'trip:{gtfs.canonical}'\n"
 )
 
 
 def add_route_stops(archive):
-    archive.writestr("route.din", "VERSION;LINE_NR;STR_LINE_VAR;LINE_DIR_NR;LINE_CONSEC_NR;STOP_NR;STOPPING_POINT_NR\n")
+    archive.writestr(
+        "route.din", "VERSION;LINE_NR;STR_LINE_VAR;LINE_DIR_NR;LINE_CONSEC_NR;STOP_NR;STOPPING_POINT_NR;LENGTH\n"
+    )
+    archive.writestr(
+        "timing_pattern.din", "VERSION;LINE_NR;STR_LINE_VAR;LINE_DIR_NR;LINE_CONSEC_NR;TIMING_GROUP_NR;TT_REL\n"
+    )
+    archive.writestr(
+        "trip.din",
+        "VERSION;LINE_NR;STR_LINE_VAR;LINE_DIR_NR;TRIP_ID;TIMING_GROUP_NR;DEPARTURE_TIME;DAY_ATTRIBUTE_NR\n",
+    )
 
 
 def global_config(tmp_path):
@@ -44,8 +54,8 @@ def test_end_to_end_exports_agency(tmp_path):
         archive.writestr("stop.din", "VERSION;STOP_NR;STOP_NAME;GLOBAL_ID;IS_RESPONSIBLE_STOP\n"
                                     "1;1;Test;S1;1\n1;2;External;S2;0\n")
         archive.writestr("operator.din", "VERSION;OP_CODE;OP_LONG_NAME\n1;1;Operator\n")
-        archive.writestr("line.din", "VERSION;LINE_NR;STR_LINE_VAR;LINE_DIR_NR;OP_CODE;LINE_NAME;MOT_NR;GLOBAL_ID\n"
-                                    "1;42;a;1;1;42;10;R\n")
+        archive.writestr("line.din", "VERSION;LINE_NR;STR_LINE_VAR;LINE_DIR_NR;OP_CODE;LINE_NAME;MOT_NR;GLOBAL_ID;BRANCH_NR\n"
+                                    "1;42;a;1;1;42;10;R;1\n")
         archive.writestr("means_of_transport_desc.din", "VERSION;MOT_NR;TMOT_NR\n1;10;3\n")
     assert main(["convert", "--profile", "dino212_default", "--config", str(config), "--input", str(source), "--output", str(destination)]) == 0
     with ZipFile(destination) as archive:

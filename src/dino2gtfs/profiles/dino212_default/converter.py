@@ -11,6 +11,7 @@ from dino2gtfs.transformers.calendar import CalendarTransformer
 from dino2gtfs.transformers.routes import RoutesTransformer
 from dino2gtfs.transformers.shapes import ShapesTransformer
 from dino2gtfs.transformers.stops import StopsTransformer
+from dino2gtfs.transformers.trips import TripsTransformer
 
 LOGGER = logging.getLogger(__name__)
 
@@ -18,7 +19,8 @@ class Dino212Converter:
     """Run the transformers selected for this profile."""
 
     transformers: tuple[type[TransformerBase], ...] = (
-        AgencyTransformer, StopsTransformer, ShapesTransformer, RoutesTransformer, CalendarTransformer
+        AgencyTransformer, StopsTransformer, ShapesTransformer, RoutesTransformer, CalendarTransformer,
+        TripsTransformer,
     )
 
     def convert(self, database: sqlite3.Connection, destination: Path, settings: Mapping[str, Any]) -> None:
